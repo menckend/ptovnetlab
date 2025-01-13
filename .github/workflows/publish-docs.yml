@@ -1,0 +1,41 @@
+name: Publish Docs
+
+on:
+  push:
+    branches:
+      - main # branch to trigger deployment
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  builddeploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Sphinx Builder
+        uses: Kjuly/sphinx-builder@1.4.0
+        with:
+          source_root: 'docs'
+          build_root: 'build'
+          default_lang: 'en'
+          lang_mappings: ''
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '${{ github.workspace }}/build/html'
+      - name: deployment
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_file = "ptovnetlab/_version.py"
+#fallback_version = '0.0.0'
+#version_scheme : str | Callable[[ScmVersion], str]
+
+[tool.setuptools.packages.find]
+#where = ["."]
+#include = ["ptovnetlab*"]
+#include = ["src*"]
+#exclude = [".venv*", "tests*", "docs*", ".github*", ".gitignore"]
+
+
+[project]
+name = "ptovnetlab"
+dynamic = ["version"]
+description = "Gets run-state details from a list of Arista switches and builds a GNS3 virtual-lab to emulate them."
+dependencies = [
+  'pyeapi',
+  'docker',
+  'build',
+  'asyncio',
+  'requests',
+  'aiohttp'
+]
+authors = [
+  {name = "Mencken Davidson", email = "mencken@gmail.com"},
+]
+maintainers = [
+  {name = "Mencken Davidson", email = "mencken@gmail.com"}
+]
+requires-python= ">=3.10"
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["arista", "eapi", "eos", "gns3", "lab", "virtual", "ceos"]
+
+[project.urls]
+Homepage = "https://menckend.github.io/dcnodatg"
+Repository = "https://github.com/menckend/dcnodatg.git"
+Issues = "https://github.com/menckend/dcnodatg/issues"

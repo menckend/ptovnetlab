@@ -1,0 +1,13 @@
+myst-parser
+netaddr
+pyeapi
+Pygments
+pymdown-extensions
+Sphinx
+sphinx-autoapi
+sphinx-rtd-theme
+sphinx_mdinclude
+sphinx_autodoc_typehints
+python-docs-theme
+docker
+sphinx-pyproject
