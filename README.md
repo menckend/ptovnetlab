@@ -33,7 +33,7 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 
 ### Python
 
-- The ptovnetlab project was written using Python 3.12.
+- The ptovnetlab project was written using Python 3.12; it will run on versions as low as 3.9.
 - The host running the ptovnetlab packages will need to have Python and the packages listed in the dependencies section of pyproject.toml installed
 - Once Python is installed, use pip to install ptovnetlab (which will install its dependencies as well):
   -  'pip install --user ptovnetlab'
@@ -41,6 +41,7 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 ### GNS3 server
 
 - The ptovnetlab package was written against version 2.2.52 of GNS3 server.
+  - Version 3.x of GNS3 server isn't compatible  (on my to-do list)
 - The GNS3 server must be pre-configured with cEOS docker templates
   - ptovnetlab will compare the EOS version string returned by the switches you're modeling to the names you've applied to the corresponding templates  on the GNS3 server
     - The GNS templates built on the docker images need to be named as "ceos:*n.n...*" for the matching to work
