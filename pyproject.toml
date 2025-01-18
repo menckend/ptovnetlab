@@ -24,7 +24,8 @@ dependencies = [
   'build',
   'asyncio',
   'requests',
-  'aiohttp'
+  'aiohttp',
+  
 ]
 authors = [
   {name = "Mencken Davidson", email = "mencken@gmail.com"},
@@ -32,7 +33,7 @@ authors = [
 maintainers = [
   {name = "Mencken Davidson", email = "mencken@gmail.com"}
 ]
-requires-python= ">=3.6"
+requires-python= ">=3.8"
 readme = "README.md"
 license = {file = "LICENSE"}
 keywords = ["arista", "eapi", "eos", "gns3", "lab", "virtual", "ceos"]
