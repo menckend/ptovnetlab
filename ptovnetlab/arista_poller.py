@@ -8,7 +8,7 @@ import pyeapi
 
 
 def invoker(switchlist_in: list, uname_in: str, passwd_in: str,
-            runtype_in: str): #-> tuple[list, list, list]:
+            runtype_in: str) -> tuple[list, list, list]:
     """Run synchronously; provide entry-point for module; manage the asyncio eventloop;
     invoke async/threaded functions to do the real work.
 
