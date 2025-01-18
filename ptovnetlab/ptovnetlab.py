@@ -1,6 +1,6 @@
 """ptovnetlab module/script
 
-Entry-point module for package.  Gathers and parses run-state details
+Entry-point module for ptovnetlab package. Gathers and parses run-state details
  from a list of Arista network switches.  Then creates a GNS3 virtual-
  lab project in which the interrogated devices are emulated."""
 
@@ -204,14 +204,16 @@ def p_to_v(**kwargs):
                     connections_to_make[i][3] = 'ethernet0'
 
     # Set GNS3 URL
-    gns3_url = 'http://'+servername+':3080/v2/'
+    gns3_url = 'http://'+servername+':3080/v3/'
     gns3_url_noapi = 'http://'+servername+':3080/static/web-ui/server/1/project/'
 
     # Get all of the docker image templates from the GNS3 server so we can figure out
     # which template_id value maps to a specific EOS version when we start building
     # our instances
-    r = requests.get(gns3_url + 'templates', timeout=20)
+    r = requests.get(gns3_url + 'templates', auth=('admin', 'admin'), timeout=20)
+    
     for x in r.json():
+        print(x)
         if x['template_type'] == 'docker':
             image_map.append([x['template_id'], x['image']])
 

@@ -32,7 +32,7 @@ authors = [
 maintainers = [
   {name = "Mencken Davidson", email = "mencken@gmail.com"}
 ]
-requires-python= ">=3.10"
+requires-python= ">=3.6"
 readme = "README.md"
 license = {file = "LICENSE"}
 keywords = ["arista", "eapi", "eos", "gns3", "lab", "virtual", "ceos"]

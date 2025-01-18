@@ -10,26 +10,23 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 ## What it does
 
 - Grabs startup configuration, version info, and lldp neighbor information from a list of Arista switches
-- Uses Arista eAPI (credentials must be provided as arguments) to retrieve all data
+-   Retreived using Arista's "EAPI"
 - Sanitizes the switch configs for use in a cEOS environment
   - Removes all AAA and username configuration
   - Reformats interface names to match the cEOS interface naming convention  Ethernet_n , not Ethernt_n/1
-  - Comments out incompatible commands ("queue..." not supported on cEOS)
+  - Comments out incompatible commands ("queue..."/etc. not supported on cEOS)
   - Configures the system mac-address of the production switch
-    - Increase verisimilitude with prod device that is being modeled
-    - Avoids mLAG incompatibility with cEOS
+    - Avoids mLAG incompatibility with older versions of cEOS
       - Docker container default mac address has U/L bit set to L instead of U, which prevents MLAG from working
 - Builds a table of interconnections between the switches
-  - Inferred from the "show lldp neighbor" and "show lldp local" output
+  - Inferred from the "show lldp neighbor" and "show lldp local" output collected from the switches
 - Creates a GNS3 project
   - Instantiates a cEOS container node in the project for each switch in the input list
   - Modeled devices mirror the following properties of the switches they are modeling:
     -  cEOS version (a pre-existing GNS3 docker template using the matching cEOS version must be present) 
     -  Ethernet interface count
-    -  system-mac-address
     -  Startup configuration
-       -  "startup-config" is pushed from the ptovnetlab package directly to the containerd service on the GNS3 server
-          -  Avoiding the need for ptovnetlab to run *on* the gns3 server
+       -  "startup-config" is passed directly to the Docker API, allowing ptovnetlab to run separately from the GNS3 server
   - Creates the connections between the GNS3/cEOS nodes, mirroring all inter-switch connections discovered in LLDP tables
 
 ## What you'll need
@@ -37,13 +34,9 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 ### Python
 
 - The ptovnetlab project was written using Python 3.12.
-  - I haven't tested it with any other versions.
 - The host running the ptovnetlab packages will need to have Python and the packages listed in the dependencies section of pyproject.toml installed
-- Once Python is installed, use pip to install either the test or "stable" version of ptovnetlab (which will install its dependencies as well):
-  - For the test version:
-    - 'pip install -i https://test.pypi.org/simple/ --no-cache --user --extra-index-url https://pypi.org/simple ptovnetlab'
-  - For the "real" version:
-    -  'pip install --user ptovnetlab'
+- Once Python is installed, use pip to install ptovnetlab (which will install its dependencies as well):
+  -  'pip install --user ptovnetlab'
 
 ### GNS3 server
 
@@ -53,6 +46,11 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
     - The GNS templates built on the docker images need to be named as "ceos:*n.n...*" for the matching to work
 - A container management service (typically dockerd or containerd) must be listening on TCP port 2375 of the GNS3 server
   - ptovnetlab makes API calls directly to the GNS3 server's container management service to copy configuration files directly onto the containers' filesystems.
+
+### Setting up GNS3 server
+
+- Install GNS3 server
+- 
 
 ### Arista Switches
 
