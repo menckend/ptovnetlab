@@ -204,7 +204,7 @@ def p_to_v(**kwargs):
                     connections_to_make[i][3] = 'ethernet0'
 
     # Set GNS3 URL
-    gns3_url = 'http://'+servername+':3080/v3/'
+    gns3_url = 'http://'+servername+':3080/v2/'
     gns3_url_noapi = 'http://'+servername+':3080/static/web-ui/server/1/project/'
 
     # Get all of the docker image templates from the GNS3 server so we can figure out
