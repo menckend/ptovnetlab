@@ -150,6 +150,6 @@ def get_sw_data(switch3: str, uname_in3: str, passwd_in3: str, sw_cntr3_in: int
                                  str(value["neighborPort"])])
     # Create this_sw_cfg list to return
     this_sw_cfg = []
-    this_sw_cfg = node.startup_config.splitlines()
+    this_sw_cfg = node.running_config_config.splitlines()
     print("Finished polling: " + switch3)
     return this_sw_vals, this_sw_lldpnbrs, this_sw_cfg, int(sw_cntr3_in)

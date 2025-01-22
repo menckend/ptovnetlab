@@ -217,10 +217,9 @@ def p_to_v(**kwargs):
         if x['template_type'] == 'docker':
             image_map.append([x['template_id'], x['image']])
 
-    # Loop through image_map while looping through switch_vals, looking for imag_map
-    # names that are good matches for the EOS version data captured in switch_vals,
-    #  and appending each entry in switch_status with the GNS3 template_id from the
-    #  matching entry in image_map
+    # Loop through image_map while looping through switch_vals, looking for docker image
+    # tags that are good matches for the EOS version data captured in switch_vals,
+    #  and updating switch_vals [n][7] value with the corresponding GNS3 UID 
     for i in range(len(switch_vals)):
         for j in range(len(image_map)):
             # strip any trailing garbage from the EOS version reported by the switch API
