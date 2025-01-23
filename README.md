@@ -2,8 +2,8 @@
 
 I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* modeling of a production EVPN Layer-3 Leaf & Spine physical network of Arista switches in a pre-existing GNS3 server, using Arista cEOS docker images.  (Also, to teach myself how to write/publish Python packages, but *really* for modeling Arista switches.)  I'd like to scale it up to supporting addditional virtual-lab platforms and network-device vendors' equipment, but all things have to start *somewhere*.
 
-- [Documentation](https://menckend.github.io/dcnodatg/)
-- [Repository](https://github.com/menckend/dcnodatg)
+- [Documentation](https://menckend.github.io/ptovnetlab/)
+- [Repository](https://github.com/menckend/ptovnetlab)
 - [(Latest) Package](https://pypi.org/project/ptovnetlab/)
 - [(testing) Package](https://test.pypi.org/project/ptovnetlab/)
 
@@ -114,7 +114,7 @@ ptovnetlab uses the following arguments (passed as keyword pairs):
 
 Installing ptovnetlab via pip will save you the effor of installing the additional dependencies list in pyproject.toml, but you can also just grab the contents of the ptovnetlab folder [directly from the git repository](https://github.com/menckend/ptovnetlab/tree/main/ptovnetlab) and store them on the host you'll run them from.
 
-You'll also need to move the "dcnod-cli.py" file *up* one level in the directory structure from the ptovnetlab folder after copying the entire folder to your host.  This is to work around "goofiness" with regards to how Python treats namespaces when accessing Python code as a "script" vs accessing it "as a module."
+You'll also need to move the "ptovnetlab-cli.py" file *up* one level in the directory structure from the ptovnetlab folder after copying the entire folder to your host.  This is to work around "goofiness" with regards to how Python treats namespaces when accessing Python code as a "script" vs accessing it "as a module."
 
 To actually run the utility, you'll enter the following command:
 
@@ -127,7 +127,7 @@ python [path-to]dcnod-cli.py'
 Enter:
 
 ```bash
-python [path-to]dcnod-cli.py'
+python [path-to]ptovnetlab-cli.py'
 ```
 
 As ptovnetlab executes, you will be prompted to respond with values for all of the parameters/arguments. No quotes or delimiters should be required as you enter the values.
