@@ -132,7 +132,7 @@ You'll also need to move the "ptovnetlab-cli.py" file *up* one level in the dire
 To actually run the utility, you'll enter the following command:
 
 ```
-python [path-to]dcnod-cli.py'
+python [path-to]ptovnetlab-cli.py'
 ```
 
 ##### To run interactively
@@ -164,7 +164,7 @@ As ptovnetlab executes, you will be prompted to respond with values for all of t
 Enter:  
 
 ```python
-python [path-to]dcnod-cli.py [arguments]
+python [path-to]ptovnetlab-cli.py [arguments]
 ```
 
 The arguments are keyword/value pairs, in the form of:
