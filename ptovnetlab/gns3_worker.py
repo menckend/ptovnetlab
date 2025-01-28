@@ -107,25 +107,10 @@ async def gns3_nodes_create_async(servername_in: str, gns3_url_in: str, sw_vals_
             my_string_to_go = ''
             for i in allconf_in[sw_val_ctr]:
                 my_string_to_go = my_string_to_go + i + "\n"
-            # Apply ASCII encoding to the config string
-            ascii_to_go = my_string_to_go.encode('ascii')
-            # Turn the ASCII-encoded string into a bytes-like object
-            bytes_to_go = BytesIO(ascii_to_go)
-            # file_like_to_go = StringIO(my_string_to_go)
-            # Turn the switch-config string into a tar archive for later
-            fh = BytesIO()
-            with tarfile.open(fileobj=fh, mode='w') as tarch:
-                info = tarfile.TarInfo('startup-config')
-                info.size = len(my_string_to_go)
-                tarch.addfile(info, bytes_to_go)
-            # Get a docker API connection for the current switch's container
-            cont1 = d_clnt.containers.get(sw_val[9])
-            # Retrieve our tar archive from the file-like object ('fh') that we stored it in
-            uggo = fh.getbuffer()
-            # Put the startup-config onto / on the virtual-switch
-            cont1.put_archive('/', data=uggo)
-            # Move the startup-config from / to /mnt/flash on the virtual switch
-            cont1.exec_run('mv /startup-config /mnt/flash/')
+            
+            # Call the new function to handle the transformation and file upload
+            upload_config_to_container(d_clnt, sw_val[9], my_string_to_go)
+
             # Set URL for request to GNS3 to stop the node
             url = gns3_url_in+"projects/" + prj_id_in+"/nodes/" + sw_val[8] + "/stop"
             # Assign the HTTP post request for async execution
@@ -135,6 +120,38 @@ async def gns3_nodes_create_async(servername_in: str, gns3_url_in: str, sw_vals_
         switch_vals_out = sw_vals_in
         return switch_vals_out
 
+
+def upload_config_to_container(docker_client, container_id, config_string):
+    """
+    Transform the configuration string into a tar archive and upload it to the container.
+
+    Parameters
+    ----------
+    docker_client : docker.DockerClient
+        The Docker client object used to interact with the Docker API.
+    container_id : str
+        The ID of the container to which the configuration will be uploaded.
+    config_string : str
+        The configuration string to be uploaded.
+    """
+    # Apply ASCII encoding to the config string
+    ascii_to_go = config_string.encode('ascii')
+    # Turn the ASCII-encoded string into a bytes-like object
+    bytes_to_go = BytesIO(ascii_to_go)
+    # Turn the switch-config string into a tar archive for later
+    fh = BytesIO()
+    with tarfile.open(fileobj=fh, mode='w') as tarch:
+        info = tarfile.TarInfo('startup-config')
+        info.size = len(config_string)
+        tarch.addfile(info, bytes_to_go)
+    # Get a docker API connection for the current switch's container
+    cont1 = docker_client.containers.get(container_id)
+    # Retrieve our tar archive from the file-like object ('fh') that we stored it in
+    uggo = fh.getbuffer()
+    # Put the startup-config onto / on the virtual-switch
+    cont1.put_archive('/', data=uggo)
+    # Move the startup-config from / to /mnt/flash on the virtual switch
+    cont1.exec_run('mv /startup-config /mnt/flash/')
 
 async def gns3_connx_create_async(servername_in: str, gns3_url_in: str, sw_vals_new:
                                   list, connx_in: list, prj_id_in: str):
