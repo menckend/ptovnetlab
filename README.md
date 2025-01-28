@@ -2,15 +2,14 @@
 
 I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* modeling of a production EVPN Layer-3 Leaf & Spine physical network of Arista switches in a pre-existing GNS3 server, using Arista cEOS docker images.  (Also, to teach myself how to write/publish Python packages, but *really* for modeling Arista switches.)  I'd like to scale it up to supporting addditional virtual-lab platforms and network-device vendors' equipment, but all things have to start *somewhere*.
 
-- [Documentation](https://menckend.github.io/dcnodatg/)
-- [Repository](https://github.com/menckend/dcnodatg)
-- [(Latest) Package](https://pypi.org/project/ptovnetlab/)
-- [(testing) Package](https://test.pypi.org/project/ptovnetlab/)
+- [Documentation](https://menckend.github.io/ptovnetlab/)
+- [Repository](https://github.com/menckend/ptovnetlab)
+- [Python Package](https://pypi.org/project/ptovnetlab/)
 
 ## What it does
 
-- Grabs startup configuration, version info, and lldp neighbor information from a list of Arista switches
--   Retreived using Arista's "EAPI"
+- Grabs running configuration, version info, and lldp neighbor information from a list of Arista switches
+-   Retreived using Arista's "eAPI"
 - Sanitizes the switch configs for use in a cEOS environment
   - Removes all AAA and username configuration
   - Reformats interface names to match the cEOS interface naming convention  Ethernet_n , not Ethernt_n/1
@@ -34,6 +33,7 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 ### Python
 
 - The ptovnetlab project was written using Python 3.12; it will run on versions as low as 3.9.
+  - It relies on 'asyncio.to_thread()' (introduced in Python 3.9) 
 - The host running the ptovnetlab packages will need to have Python and the packages listed in the dependencies section of pyproject.toml installed
 - Once Python is installed, use pip to install ptovnetlab (which will install its dependencies as well):
   -  'pip install --user ptovnetlab'
@@ -48,9 +48,22 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 - A container management service (typically dockerd or containerd) must be listening on TCP port 2375 of the GNS3 server
   - ptovnetlab makes API calls directly to the GNS3 server's container management service to copy configuration files directly onto the containers' filesystems.
 
-### Setting up GNS3 server
+#### Setting up GNS3 server
 
-- Install GNS3 server
+- Install GNS3 server as per GNS3 documentation (on a Linux OS)
+  - Do not use any of the 3.x releases, only 2.x releases
+  - Be sure to have Docker installed/running on the host that GNS3 is installed on
+  - Not just the executables, but also the containerd/dockerd _services_
+- Obtain cEOS images
+- Import cEOS images to Docker (on the host where GNS3server is installed)
+  - 'docker import -c 'VOLUME /mnt/flash/' cEOS-lab-_n.m.p_.tar.xz ceoslab:_n.m.p_.'
+    - This is important; you have to include a persistent volume definition for /mnt/flash
+- Create GNS3 templates for Arista cEOS images
+  - Follow the GNS3 documentation for creating a new template
+  - Select "existing image" when prompted
+  - Enter the following string when prompted for the startup command
+  -   '/sbin/init systemd.setenv=INTFTYPE=eth systemd.setenv=ETBA=1 systemd.setenv=SKIP_ZEROTOUCH_BARRIER_IN_SYSDBINIT=1 systemd.setenv=CEOS=1 systemd.setenv=EOS_PLATFORM=ceoslab systemd.setenv=container=docker systemd.setenv=MGMT_INTF=eth0
+'
 - 
 
 ### Arista Switches
@@ -114,12 +127,12 @@ ptovnetlab uses the following arguments (passed as keyword pairs):
 
 Installing ptovnetlab via pip will save you the effor of installing the additional dependencies list in pyproject.toml, but you can also just grab the contents of the ptovnetlab folder [directly from the git repository](https://github.com/menckend/ptovnetlab/tree/main/ptovnetlab) and store them on the host you'll run them from.
 
-You'll also need to move the "dcnod-cli.py" file *up* one level in the directory structure from the ptovnetlab folder after copying the entire folder to your host.  This is to work around "goofiness" with regards to how Python treats namespaces when accessing Python code as a "script" vs accessing it "as a module."
+You'll also need to move the "ptovnetlab-cli.py" file *up* one level in the directory structure from the ptovnetlab folder after copying the entire folder to your host.  This is to work around "goofiness" with regards to how Python treats namespaces when accessing Python code as a "script" vs accessing it "as a module."
 
 To actually run the utility, you'll enter the following command:
 
 ```
-python [path-to]dcnod-cli.py'
+python [path-to]ptovnetlab-cli.py'
 ```
 
 ##### To run interactively
@@ -127,7 +140,7 @@ python [path-to]dcnod-cli.py'
 Enter:
 
 ```bash
-python [path-to]dcnod-cli.py'
+python [path-to]ptovnetlab-cli.py'
 ```
 
 As ptovnetlab executes, you will be prompted to respond with values for all of the parameters/arguments. No quotes or delimiters should be required as you enter the values.
@@ -151,7 +164,7 @@ As ptovnetlab executes, you will be prompted to respond with values for all of t
 Enter:  
 
 ```python
-python [path-to]dcnod-cli.py [arguments]
+python [path-to]ptovnetlab-cli.py [arguments]
 ```
 
 The arguments are keyword/value pairs, in the form of:

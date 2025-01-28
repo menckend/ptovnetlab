@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.abspath('../ptovnetlab/'))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'Data Center Network on Demand'
-copyright = '2024, Mencken Davidson'
+project = 'ptovnetlab'
+copyright = '2025, Mencken Davidson'
 author = 'Mencken Davidson'
 
 # -- General configuration ---------------------------------------------------
