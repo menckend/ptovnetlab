@@ -213,7 +213,6 @@ def p_to_v(**kwargs):
     r = requests.get(gns3_url + 'templates', auth=('admin', 'admin'), timeout=20)
     
     for x in r.json():
-        print(x)
         if x['template_type'] == 'docker':
             image_map.append([x['template_id'], x['image']])
 

@@ -7,9 +7,9 @@ from io import BytesIO
 import tarfile
 import requests
 import aiohttp
-import docker
+#import docker
 import aiodocker
-
+from aiodocker import Docker as docker
 
 def invoker(servername: str, gns3_url: str, sw_vals: list,
             allconf: list, prj_id: str, connx_list: list):
@@ -61,29 +61,34 @@ async def main_job(servername: str, gns3_url: str, sw_vals: list,
     """
     print('')
     print('Creating the nodes in the GNS3 project.')
-    async with aiohttp.ClientSession(timeout=30) as session:
+    timeout_seconds = 30
+    session_timeout = aiohttp.ClientTimeout(total=None,sock_connect=timeout_seconds,sock_read=timeout_seconds)
+    async with aiohttp.ClientSession(timeout=session_timeout) as session:
         # Set x/y coordinates for the first node on the project
         nodex = -825
         nodey = -375
 
         async with asyncio.TaskGroup() as tg1:
+            tasks=[]
             for sw_val_ctr, sw_val in enumerate(sw_vals):
                 # Call the function to make a bunch of API calls to GNS3server for a new node
-                sw_vals[sw_val_ctr] = tg1.create_task(make_a_gns3_node(sw_val, session, gns3_url, nodex, nodey, prj_id))
+                task = tg1.create_task(make_a_gns3_node(sw_val, session, gns3_url, nodex, nodey, prj_id))
+                tasks.append(task)
                 # Increment x/y coordinates for the *next* switch to be instantiated
                 nodex += 150
                 if nodex > 400:
                     nodex = -800
                     nodey = nodey + 200
+        sw_vals = [await task for task in tasks]
  
         async with asyncio.TaskGroup() as tg2:
             # Create docker client for RESTful API
-            docker_client = aiodocker.Docker(url='tcp://'+ servername + ' :2375')
-
+            docker = aiodocker.Docker(url="http://"+servername+"2375")
             for sw_val_ctr, sw_val in enumerate(sw_vals):
                 # Call the function that starts the new nodes' containers and
                 # pushes the configuration to them before stopping them
-                tg2.create_task(docker_api_stuff(sw_val, allconf[sw_val_ctr], docker_client))
+                tg2.create_task(docker_api_stuff(sw_val, allconf[sw_val_ctr], docker))
+            docker.close
 
         async with asyncio.TaskGroup() as tg3:
             cnx_urls = []
@@ -108,12 +113,8 @@ async def main_job(servername: str, gns3_url: str, sw_vals: list,
                 tg3.create_task(gns3_post(session, str(make_link_url), 'post', jsondata=make_link_json))
         return "Virtual Network Lab is ready to run."
 
-#        switch_vals_out = sw_vals
-#        return switch_vals_out
 
-
-
-async def docker_api_stuff(swval, config, docker_client):
+async def docker_api_stuff(swval, config, docker_conn):
     """
     Convert config from list of strings to a string and copy it to the container
 
@@ -131,7 +132,7 @@ async def docker_api_stuff(swval, config, docker_client):
     for i in config:
         my_string_to_go = my_string_to_go + i + "\n"
     # Apply ASCII encoding to the config string
-    ascii_to_go = config.encode('ascii')
+    ascii_to_go = my_string_to_go.encode('ascii')
     # Turn the ASCII-encoded string into a bytes-like object
     bytes_to_go = BytesIO(ascii_to_go)
     fh = BytesIO()
@@ -142,54 +143,56 @@ async def docker_api_stuff(swval, config, docker_client):
     # Retrieve our tar archive from the file-like object ('fh') that we stored it in
     buffer_to_send = fh.getbuffer()
 
+    try:
+        # Access the container by its ID
+        container = await docker.containers.get(swval[9])
+        await container.put_archive('/', data=buffer_to_send)
+        await container.start()
+        await container.exec_run('mv /startup-config /mnt/flash/')
+        await container.stop
+    except aiodocker.exceptions.DockerError as e:
+            print(f"Docker error: {e}")
+    finally:
+        return 'done'
 
-    # Grab the Docker container we're interested in
-    my_container = docker_client.containers.get(swval[9])
+async def fetch_json_data_post(session, url, json_in):
+    async with session.post(url, json=json_in) as response:
+        json_data = await response.json()
+        return json_data
 
-    # Copy the configuration string to the container's root file-system
-    await my_container.put_archive('/', data=buffer_to_send)
-
-    # Start the Docker container
-    await my_container.start
-
-    # Move the configuration file from / to /mnt/flash on the container
-    await my_container.put_archive('/', data=buffer_to_send)
-
-    # Move the configuration file from / to /mnt/flash on the container
-    await my_container.exec_run('mv /startup-config /mnt/flash/')
-
-    # Stop the Docker container
-    await my_container.stop
-    return
+async def fetch_json_data_get (session, url, json_in):
+    async with session.get(url, json=json_in) as response:
+        json_data = await response.json()
+        return json_data
 
 
 async def make_a_gns3_node(sw_val: list, session: str, gns3_url: str, nodex, nodey, prj_id, **kwargs) -> str:
 
-    # All the sequential API calls that have to be run serially for each GNS3 container/node
-    # Should be invoked as an asyncio task being added to an existing taskGroup
-
     # Duplicate the existing GNS3 docker template for the device being modeled
-    async with session.post(gns3_url +'templates/' + sw_val[7] + '/duplicate').json()['template_id'] as tmp_template_id:
-        await asyncio.sleep(.1)
-    # Change the interface count on the temporary template
-    async with session.put(gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json={'adapters': int(sw_val[6])+1}):
-        await asyncio.sleep(.1)
-    # Create the new GNS3 node and capture its GNS3 UID.
-    async with session.post(gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json={'x': nodex, 'y': nodey}).json()['node_id'] as sw_val[8]:
-        await asyncio.sleep(.1)
-    # Delete the temporary GNS3 template
-    async with session.delete(gns3_url +'templates/' + tmp_template_id):
-        await asyncio.sleep(.1)
-    # Change the name of the newly created node to match the device being modeled
-    async with session.put(gns3_url +'projects/' + prj_id + '/nodes/' + sw_val[8], json={'name':sw_val[0]}):
-        await asyncio.sleep(.1)
+    json_data = await fetch_json_data_post(session, gns3_url +'templates/' + sw_val[7] + '/duplicate', json_in=[])
+    tmp_template_id = json_data['template_id']
 
-    async with session.get(gns3_url +'projects/' + prj_id + '/nodes/' + sw_val[8]).json()['properties']['container_id'] as sw_val[9]:
-        await asyncio.sleep(.1)
+    # Change the interface count on the temporary template
+    async with session.put(gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json={'adapters': int(sw_val[6])+1}) as response:
+        await response.text()
+
+    # Create the new GNS3 node and capture its GNS3 UID.
+    json_data = await fetch_json_data_post(session, gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json_in={'x': nodex, 'y': nodey})
+    sw_val[8] = json_data['node_id']
+    
+    # Delete the temporary GNS3 template
+    async with session.delete(gns3_url +'templates/' + tmp_template_id) as response:
+        await response.text()
+
+    # Change the name of the newly created node to match the device being modeled
+    async with session.put(gns3_url +'projects/' + prj_id + '/nodes/' + sw_val[8], json={'name':sw_val[0]}) as response:
+        await response.text()
+
+    # Grab the new node's Docker container's UID
+    json_data = await fetch_json_data_get(session, gns3_url +'projects/' + prj_id + '/nodes/' + sw_val[8], json_in=[])
+    sw_val[9] = json_data['properties']['container_id']
 
     return sw_val
-
-
 
 async def gns3_post(session: str, url: str, method: str, **kwargs) -> str:
     """Send an async POST request to GNS3 server.
