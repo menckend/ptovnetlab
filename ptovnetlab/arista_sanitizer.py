@@ -4,18 +4,23 @@ For modifying the configuration extracted from an Arista hardware
  appliance's EOS configuration to make it suitable for use on a cEOS
  container in a lab environment"""
 
+from ptovnetlab.data_classes import Switch
 
-def eos_to_ceos(switchConfigIn: list, sysMacIn: str) -> list:
-    """Module entry-point.  Accepts an Arista EOS switch config
-     and related paraand returns, returning a cEOS lab-ready
-     version of the configuration
+
+def eos_to_ceos(switch: Switch) -> Switch:
+    """Module entry-point. Accepts a Switch object and returns it with
+    a cEOS lab-ready version of the configuration
 
     Parameters
     ---------
-    switchConfigIn : list
-        List of lines of a switch's configuration
-    sysMacIn : str
-        The system MAC address of the original switch"""
+    switch : Switch
+        Switch object containing the configuration to sanitize
+
+    Returns
+    -------
+    switch : Switch
+        Updated Switch object with sanitized configuration and interface count
+    """
 
     # List of global-config commands that we should comment out for \
     # cEOS-compatibility and lab environments in general
@@ -33,33 +38,32 @@ def eos_to_ceos(switchConfigIn: list, sysMacIn: str) -> list:
 
     # Get the number of Ethernet interfaces present in the \
     # original config
-    etherCount = count_ether_interfaces(switchConfigIn)
+    switch.ethernet_interfaces = count_ether_interfaces(switch.initial_config)
 
     # Replace all references to 'Management1' in the config with \
     # 'Ethernet0'
-    #mgt_port_int = int(etherCount) + 1
     mgt_port_str = 'Management0'
 
     # Loop through the lines in each switch's configuration
-    for linect, line in enumerate(switchConfigIn):
+    for linect, line in enumerate(switch.initial_config):
         # Replace the Management1 interface name with an extra Ethernet interface
-        switchConfigIn[linect] = line.replace('Management1', mgt_port_str)
-        switchConfigIn[linect] = line.replace('Management0', mgt_port_str)
-        # Eiminate config lines the begin with any of the "badStarts" strings
+        switch.initial_config[linect] = line.replace('Management1', mgt_port_str)
+        switch.initial_config[linect] = line.replace('Management0', mgt_port_str)
+        # Eliminate config lines that begin with any of the "badStarts" strings
         for oopsie in badStarts:
-            if switchConfigIn[linect].startswith(oopsie):
+            if switch.initial_config[linect].startswith(oopsie):
                 # Can't just delete the un-wanted lines, that would screw up
                 # the iteration through the list. Better to just prepend with a '!'
-                switchConfigIn[linect] = "!removed_for_cEOS-lab| " + switchConfigIn[linect]
+                switch.initial_config[linect] = "!removed_for_cEOS-lab| " + switch.initial_config[linect]
         # Get rid of '...netN/2|3|4' interface config sections altogether
         # (can't have them getting converted to ../netN and their vestigial config
         # overwriting the actual interface config
         spurious_interface = False
         # Check to see if the current config line is a 'spurious' interface
-        spurious_interface = switchConfigIn[linect].startswith(
-            'interface Ethernet') and ('/2' in switchConfigIn[linect] or '/3'
-                                       in switchConfigIn[linect] or '/4' in
-                                       switchConfigIn[linect])
+        spurious_interface = switch.initial_config[linect].startswith(
+            'interface Ethernet') and ('/2' in switch.initial_config[linect] or '/3'
+                                       in switch.initial_config[linect] or '/4' in
+                                       switch.initial_config[linect])
         if spurious_interface:
             # Loop through the lines in the spurious interface's config section
             # and comment them out by prepending with '!'
@@ -68,38 +72,38 @@ def eos_to_ceos(switchConfigIn: list, sysMacIn: str) -> list:
             # Stop commenting out lines when we get to the end of the config
             # section (marked by a line consisting of '!')
             while not next_sec:
-                if switchConfigIn[shortcount] == '!':
+                if switch.initial_config[shortcount] == '!':
                     next_sec = True
-                switchConfigIn[shortcount] = '!' + switchConfigIn[shortcount]
+                switch.initial_config[shortcount] = '!' + switch.initial_config[shortcount]
                 shortcount += 1
         # Convert interface names from  '...netn/m' to '...netn'
-        if switchConfigIn[linect].startswith('interface Ethernet'):
-            switchConfigIn[linect] = switchConfigIn[linect].split('/')[0]
+        if switch.initial_config[linect].startswith('interface Ethernet'):
+            switch.initial_config[linect] = switch.initial_config[linect].split('/')[0]
 
     # Add a configuration section to apply the system-mac-address of the
     # original switch to the cEOS container's configuration
-    switchConfigIn = applySysMac(switchConfigIn, sysMacIn)
-    return switchConfigIn, etherCount
+    switch.initial_config = applySysMac(switch.initial_config, switch.system_mac)
+    return switch
 
 
-def count_ether_interfaces(switchConfigIn: list) -> int:
-    """Accept a list of lines representing a switch config and return \
-    the number of Ethernet interfaces the corresponding cEOS \
+def count_ether_interfaces(config: list) -> int:
+    """Accept a list of lines representing a switch config and return
+    the number of Ethernet interfaces the corresponding cEOS
     container will need
 
     Parameters
     ---------
-    switchConfigIn : list
+    config : list
         List of lines of a switch's configuration
 
     Returns
     -------
     my_ethercount : int
-        The number of Ethernet interfaces the cEOS container version of the switch will\
-         need
+        The number of Ethernet interfaces the cEOS container version of the switch will
+        need
     """
     my_ethercount = 0
-    for line in switchConfigIn:
+    for line in config:
         # We're only counting single interfaces (not the breakout interfaces)
         if (line.startswith('interface Ethernet') and (not (line.endswith('/2') or
                                                             line.endswith('/3') or
@@ -108,22 +112,22 @@ def count_ether_interfaces(switchConfigIn: list) -> int:
     return my_ethercount
 
 
-def applySysMac(switchConfigIn: list, sysMacIn: str) -> list:
-    """Construct and append the event handler configuration to to \
+def applySysMac(config: list, sys_mac: str) -> list:
+    """Construct and append the event handler configuration to
     apply the system-mac-address of the modeled switch to the cEOS
     container's configuration
 
     Parameters
     ---------
-    switchConfigIn : list
+    config : list
         List of lines of a switch's configuration
-    sysMacIn : str
+    sys_mac : str
         The system MAC address of the original switch
 
     Returns
     -------
-    switchConfigIn : list
-        List of lines of a switch's configuration
+    config : list
+        Updated list of lines of a switch's configuration
     """
     
     # Create an event-handler section to append to the configuration to
@@ -139,10 +143,9 @@ def applySysMac(switchConfigIn: list, sysMacIn: str) -> list:
     # snippet(with the REAL switch's MAC address) before adding the final 'end' back
     # This will help our lab switches look more like the prod switches, but will
     # also work around the system-mac MLAG bug on cEOS
-    poppedline = switchConfigIn.pop(-1)
-    sysMacSnip[3] = '      var_sysmac=\'' + \
-        sysMacIn + '\''
+    poppedline = config.pop(-1)
+    sysMacSnip[3] = '      var_sysmac=\'' + sys_mac + '\''
     for sysmacline in range(len(sysMacSnip)):
-        switchConfigIn.append(sysMacSnip[sysmacline])
-    switchConfigIn.append(poppedline)
-    return switchConfigIn
+        config.append(sysMacSnip[sysmacline])
+    config.append(poppedline)
+    return config

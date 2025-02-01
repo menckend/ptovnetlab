@@ -1,14 +1,14 @@
 """ptovnetlab module/script
 
 Entry-point module for ptovnetlab package. Gathers and parses run-state details
- from a list of Arista network switches.  Then creates a GNS3 virtual-
- lab project in which the interrogated devices are emulated."""
-
+from a list of Arista network switches. Then creates a GNS3 virtual-
+lab project in which the interrogated devices are emulated."""
 
 import sys
 from getpass import getpass
 import requests
 from ptovnetlab import arista_poller, arista_sanitizer, gns3_worker
+from ptovnetlab.data_classes import Switch, Connection
 
 
 def read_file(file_to_read: str) -> list:
@@ -59,7 +59,7 @@ def predelimiter(string, delimiter):
     return string[:index]
 
 
-def p_to_v(**kwargs):
+def p_to_v(**kwargs) -> str:
     """Pull switch run-state data, massage it, and turn it into a GNS3 lab
 
     Parameters
@@ -80,56 +80,19 @@ def p_to_v(**kwargs):
     Returns
     -------
     result : str
+        URL to access the created GNS3 project
     """
-    # Guide for which values are held in which indices of switch_vals
-    # switch_vals[n][0]= switch name received as input argument
-    # switch_vals[n][1]= switch model
-    # switch_vals[n][2]= EOS version
-    # switch_vals[n][3]= system MAC
-    # switch_vals[n][4]= serial number
-    # switch_vals[n][5]= LLDP system-name
-    # switch_vals[n][6]= Number of Ethernet interfaces
-    # switch_vals[n][7]= GNS3 image-template ID
-    # switch_vals[n][8]= GNS3 node-ID
-    # switch_vals[n][9]= Docker container ID
-    # switch_vals[n][10]= switch vendor/platform
-    # switch_vals[n][11]= QEMU VM ID
-
-    # Initializing list of LLDP neighbor details we'll use to build a list of connections for GNS3
-    connections_to_make = []
-
-    # Initializing nested list for holding the configs of ALL the switches
-    allconfigs = []
-
-    # Initializing a list for holding a list of gns3 template_id values and corresponding EOS \
-    # version values
-    image_map = []
     # Set default values for all anticipated arguments
-    filename = ''
-    username = ''
-    passwd = ''
-    switchlist = []
-    servername = ''
-    prj_name = ''
-    run_type = 'module'
+    filename = kwargs.get('filename', '')
+    username = kwargs.get('username', '')
+    passwd = kwargs.get('passwd', '')
+    switchlist = kwargs.get('switchlist', [])
+    servername = kwargs.get('servername', '')
+    prj_name = kwargs.get('prjname', '')
+    run_type = kwargs.get('runtype', 'module')
 
-    # Pull any expected (and received) arguments from kwargs into their recipient
-    # objects
-    if 'filename' in kwargs:
-        filename = kwargs['filename']
-    if 'username' in kwargs:
-        username = kwargs['username']
-    if 'passwd' in kwargs:
-        passwd = kwargs['passwd']
-    if 'switchlist' in kwargs:
-        switchlist = kwargs['switchlist']
-    if 'servername' in kwargs:
-        servername = kwargs['servername']
-    if 'prjname' in kwargs:
-        prj_name = kwargs['prjname']
-    if 'runtype' in kwargs:
-        run_type = kwargs['runtype']
-    if (filename == '' and switchlist == []):
+    # Handle interactive input if needed
+    if not filename and not switchlist:
         print("Enter a switch name and press enter.")
         print("(Press Enter without entering a name when done.")
         while True:
@@ -137,107 +100,87 @@ def p_to_v(**kwargs):
             if not line:
                 break
             switchlist.append(line)
-    if (filename != '') and (switchlist != []):
+    
+    if filename and switchlist:
         print("Don't pass both filename_arg AND switchlist_arg; choose one or the other.")
         exit(1)
-    if prj_name == '':
-        prj_name = input('Enter a value to use for the GNS project name when modeling the \
-                         production switches: ')
-    if servername == '':
+    
+    if not prj_name:
+        prj_name = input('Enter a value to use for the GNS project name when modeling the production switches: ')
+    
+    if not servername:
         servername = input('Enter the name of the GNS3 server: ')
+    
     # Read the input switch-list file, if a filename was provided
-    if filename != '':
+    if filename:
         switchlist = read_file(filename)
 
     # Remove any blank entries from switchlist
     switchlist = list(filter(None, switchlist))
+    
     # Prompt for switch/EOS credentials if none were provided
-    if username == '':
+    if not username:
         username = input('Enter username for Arista EOS login: ')
-    if passwd == '':
+    if not passwd:
         passwd = getpass('Enter password for Arista EOS login: ')
 
-    # Call eos_poller.invoker to get runstate from the Arista switches
-    switch_vals, connections_to_make, allconfigs = arista_poller.invoker(switchlist,
-                                                                      username, passwd,
-                                                                      run_type)
+    # Call arista_poller to get runstate from the Arista switches
+    switches, connections = arista_poller.invoker(switchlist, username, passwd, run_type)
 
-    # Loop through all those configs and clean them up for life in a virtual lab,
-    # while also grabbing the interface count for later
-    for i, val in enumerate(allconfigs):
-        allconfigs[i], switch_vals[i][6] = arista_sanitizer.eos_to_ceos(val, switch_vals[i][3])
+    # Clean up configs for virtual lab use
+    for switch in switches:
+        switch = arista_sanitizer.eos_to_ceos(switch)
 
-    # Create a list of the LLDP local-IDs used by our switches
-    our_lldp_ids = []
-    for val in switch_vals:
-        our_lldp_ids.append(val[5])
+    # Filter out connections that don't involve our switches
+    our_lldp_ids = [switch.lldp_system_name for switch in switches]
+    connections = [conn for conn in connections 
+                  if conn.switch_a in our_lldp_ids and conn.switch_b in our_lldp_ids]
 
-    # Sanitize connections_to_make list; removing any entries in which either end
-    # is NOT one of our switches  (we can't tell GNS3 to create a connection to a
-    # node that doesn't exist in the project.)
-    connections_to_make[:] = [connx for connx in connections_to_make if
-                              list_search(our_lldp_ids, connx[0]) and
-                              list_search(our_lldp_ids, connx[2])]
+    # Remove duplicate connections (A->B is same as B->A)
+    unique_connections = []
+    for conn in connections:
+        reverse_exists = any(c.switch_a == conn.switch_b and 
+                           c.switch_b == conn.switch_a and
+                           c.port_a == conn.port_b and 
+                           c.port_b == conn.port_a 
+                           for c in unique_connections)
+        if not reverse_exists:
+            unique_connections.append(conn)
+    connections = unique_connections
 
-    # Remove A|B-inverted entries in connections_to_make
-    # (connections are directionless; so A<>B is the same as B<>A)
-    for i in connections_to_make:
-        for j in connections_to_make:
-            if i[2]+i[3] == j[0]+j[1]:
-                connections_to_make.remove(j)
-
-    # Clean up "management1" in the connections_to_make list (using eth0
-    #  instead.  Prod Switch management1 interface is presented in cEOS CLI
-    #  as Management0, and Docker presents it to the container as eth0, which
-    # is how it presents in GNS3
-
-    for i, val in enumerate(connections_to_make):
-        connections_to_make[i][1] = val[1].lower()
-        connections_to_make[i][3] = val[3].lower()
-        if val[1].startswith('management'):
-            for j, val2 in enumerate(switch_vals):
-                if val[0] == val2[5]:
-                    connections_to_make[i][1] = 'ethernet0'
-        if val[3].startswith('management'):
-            for j, val2 in enumerate(switch_vals):
-                if val[2] == val2[5]:
-                    connections_to_make[i][3] = 'ethernet0'
+    # Clean up management interfaces in connections
+    for conn in connections:
+        if conn.port_a.lower().startswith('management'):
+            conn.port_a = 'ethernet0'
+        if conn.port_b.lower().startswith('management'):
+            conn.port_b = 'ethernet0'
 
     # Set GNS3 URL
-    gns3_url = 'http://'+servername+':3080/v2/'
-    gns3_url_noapi = 'http://'+servername+':3080/static/web-ui/server/1/project/'
+    gns3_url = f'http://{servername}:3080/v2/'
+    gns3_url_noapi = f'http://{servername}:3080/static/web-ui/server/1/project/'
 
-    # Get all of the docker image templates from the GNS3 server so we can figure out
-    # which template_id value maps to a specific EOS version when we start building
-    # our instances
+    # Get GNS3 templates and map EOS versions to template IDs
     r = requests.get(gns3_url + 'templates', auth=('admin', 'admin'), timeout=20)
-    
-    for x in r.json():
-        if x['template_type'] == 'docker':
-            image_map.append([x['template_id'], x['image']])
+    image_map = {x['image'].lower(): x['template_id'] 
+                 for x in r.json() 
+                 if x['template_type'] == 'docker'}
 
-    # Loop through image_map while looping through switch_vals, looking for docker image
-    # tags that are good matches for the EOS version data captured in switch_vals,
-    #  and updating switch_vals [n][7] value with the corresponding GNS3 UID 
-    for i in range(len(switch_vals)):
-        for j in range(len(image_map)):
-            # strip any trailing garbage from the EOS version reported by the switch API
-            fudgedupeosverion = ('ceos:' + predelimiter(switch_vals[i][2].lower(), '-'))
-            if fudgedupeosverion == image_map[j][1].lower():
-                switch_vals[i][7] = image_map[j][0]
-    # create a new project with provided name and grab the project_id
-    gnsprj_id = requests.post(gns3_url + 'projects', json={'name': prj_name},
-                              timeout=20).json()['project_id']
-    # Grab the templates object from the GNS server so we can crawl through it
-    # templ_qry_resp = requests.get(gns3_url + 'templates')
+    # Set template IDs for switches based on their EOS version
+    for switch in switches:
+        eos_version = 'ceos:' + predelimiter(switch.eos_version.lower(), '-')
+        if eos_version in image_map:
+            switch.gns3_template_id = image_map[eos_version]
 
-    # Invoke function that handles node creation/configuration in GNS3 project
-    gns3_worker.invoker(servername, gns3_url, switch_vals,
-                        allconfigs, gnsprj_id, connections_to_make)
-    # Done!
+    # Create new GNS3 project
+    gnsprj_id = requests.post(gns3_url + 'projects', 
+                            json={'name': prj_name},
+                            timeout=20).json()['project_id']
+
+    # Create nodes and connections in GNS3
+    gns3_worker.invoker(servername, gns3_url, switches, gnsprj_id, connections)
 
     # Close the GNS3 project
-    requests.post(gns3_url + 'projects' + 'project_id' + 'close')
+    requests.post(gns3_url + 'projects/' + gnsprj_id + '/close')
     return gns3_url_noapi + gnsprj_id
 
 
@@ -246,13 +189,8 @@ if __name__ == '__main__':
     for arg in sys.argv[1:]:
         splarg = arg.split('=')
         if splarg[0] == 'switchlist':
-            splargalt = []
-            for swname in splarg[1].split():
-                splargalt.append(swname)
-            kwdict[splarg[0]] = splargalt
+            kwdict[splarg[0]] = splarg[1].split()
         else:
             kwdict[splarg[0]] = splarg[1]
     kwdict['runtype'] = 'script'
-    import ptovnetlab.gns3_worker
-    import ptovnetlab.arista_poller
     p_to_v(**kwdict)
