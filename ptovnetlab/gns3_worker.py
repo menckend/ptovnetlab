@@ -135,6 +135,8 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
         return "Virtual Network Lab is ready to run."
 
 
+
+
 async def docker_api_stuff(switch: Switch, docker_client):
     """
     Convert config from list of strings to a string and copy it to the container
@@ -177,12 +179,16 @@ async def docker_api_stuff(switch: Switch, docker_client):
         # Copy config and execute commands
         await container.put_archive('/', data=buffer_to_send)
         await container.start()
-#        print(dir(container))
-        exec_config = await container.exec(cmd=['mv', '/startup-config', '/mnt/flash/'])
-        exec_stream = await exec_config.start(detach=False)
-        output = await exec_stream.read_out()
-        if output.exit_code != 0:
-            print(f"Warning: mv command failed for {switch.name}")
+
+        # Execute the mv command to move the startup-config file
+        exec_mv = await container.exec(cmd=['mv', '/startup-config', '/mnt/flash/'])
+        #print("Ran the mv command. About to check the result")
+                
+        # Check the exit code of the exec command
+        exec_result = await exec_mv.inspect()
+        if exec_result['ExitCode'] != 0:
+            print(f"Warning: mv command failed for {switch.name}))
+        
         await container.stop()  # Call stop() as a method
         
         print(f"Successfully configured switch {switch.name}")
@@ -194,6 +200,9 @@ async def docker_api_stuff(switch: Switch, docker_client):
     except Exception as e:
         print(f"Unexpected error for switch {switch.name}: {e}")
         return f'failed - {str(e)}'
+
+
+
 
 async def fetch_json_data_post(session, url, json_in):
     async with session.post(url, json=json_in) as response:
