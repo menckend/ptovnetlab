@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 @dataclass
@@ -14,9 +14,9 @@ class Switch:
     gns3_template_id: str  # GNS3 image-template ID
     gns3_node_id: str  # GNS3 node-ID
     docker_container_id: str  # Docker container ID
+    initial_config: List = field(default_factory=list)  # The modeled device's configuration
     vendor_platform: str = ''  # Switch vendor/platform (optional)
     qemu_vm_id: str = ''  # QEMU VM ID (optional)
-    initial_config: list =[] #The modeled device's configuration
 
 @dataclass
 class Connection:

@@ -78,14 +78,22 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
                     nodey = nodey + 200
         switches = [await task for task in tasks]
  
-        async with asyncio.TaskGroup() as tg2:
-            # Create docker client for RESTful API
-            docker = aiodocker.Docker(url="http://"+servername+"2375")
-            for switch in switches:
-                # Call the function that starts the new nodes' containers and
-                # pushes the configuration to them before stopping them
-                tg2.create_task(docker_api_stuff(switch, docker))
-            docker.close
+        # Create docker client for RESTful API
+        
+        docker_client = aiodocker.Docker(url=f"http://{servername}:2375")
+        try:
+            async with asyncio.TaskGroup() as tg2:
+                tasks = []
+                for switch in switches:
+                    # Call the function that starts the new nodes' containers and
+                    # pushes the configuration to them before stopping them
+                    task = tg2.create_task(docker_api_stuff(switch, docker_client))
+                    tasks.append(task)
+                # Wait for all tasks to complete
+                results = [await task for task in tasks]
+                print("Configuration copying completed for all switches")
+        finally:
+            await docker_client.close()
 
         async with asyncio.TaskGroup() as tg3:
             for connection in connections:
@@ -98,10 +106,26 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
                         b_node_id = switch.gns3_node_id
                 
                 if a_node_id and b_node_id:
-                    a_node_adapter_nbr = str(connection.port_a.split('/')[0].split('ethernet')[1])
-                    b_node_adapter_nbr = str(connection.port_b.split('/')[0].split('ethernet')[1])
+                    try:
+                        # More robust port parsing with error handling
+                        def parse_port(port):
+                            if not port.lower().startswith('ethernet'):
+                                raise ValueError(f"Invalid port format: {port}. Port must start with 'ethernet'")
+                            # Extract numbers after 'ethernet', before any '/'
+                            port_base = port.lower().split('/')[0]
+                            adapter_num = ''.join(filter(str.isdigit, port_base))
+                            if not adapter_num:
+                                raise ValueError(f"Could not extract adapter number from port: {port}")
+                            return adapter_num
 
-                    make_link_url = gns3_url + 'projects/' + prj_id + '/links'
+                        a_node_adapter_nbr = parse_port(connection.port_a)
+                        b_node_adapter_nbr = parse_port(connection.port_b)
+
+                        make_link_url = gns3_url + 'projects/' + prj_id + '/links'
+                    except (IndexError, ValueError) as e:
+                        print(f"Error parsing ports for connection {connection.switch_a}:{connection.port_a} -> {connection.switch_b}:{connection.port_b}")
+                        print(f"Error details: {str(e)}")
+                        continue
                     make_link_json = {'nodes': [{'adapter_number': int(a_node_adapter_nbr),
                                             'node_id': a_node_id, 'port_number': 0},
                                             {'adapter_number': int(b_node_adapter_nbr),
@@ -111,7 +135,7 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
         return "Virtual Network Lab is ready to run."
 
 
-async def docker_api_stuff(switch: Switch, docker_conn):
+async def docker_api_stuff(switch: Switch, docker_client):
     """
     Convert config from list of strings to a string and copy it to the container
 
@@ -119,36 +143,57 @@ async def docker_api_stuff(switch: Switch, docker_conn):
     ----------
     switch : Switch
         The Switch object containing the configuration and container details
-    docker_conn : docker.DockerClient
+    docker_client : docker.DockerClient
         The Docker client object used to interact with the Docker API.
     """
-    # Turn a list of strings into a buffer-like-object containing a tar archive
-    my_string_to_go = ''
-    for i in switch.initial_config:
-        my_string_to_go = my_string_to_go + i + "\n"
-    # Apply ASCII encoding to the config string
-    ascii_to_go = my_string_to_go.encode('ascii')
-    # Turn the ASCII-encoded string into a bytes-like object
-    bytes_to_go = BytesIO(ascii_to_go)
-    fh = BytesIO()
-    with tarfile.open(fileobj=fh, mode='w') as tarch:
-        info = tarfile.TarInfo('startup-config')
-        info.size = len(switch.initial_config)
-        tarch.addfile(info, bytes_to_go)
-    # Retrieve our tar archive from the file-like object ('fh') that we stored it in
-    buffer_to_send = fh.getbuffer()
-
+    print(f"Processing configuration for switch {switch.name}")
+    
     try:
+        # Turn a list of strings into a single string with newlines
+        config_string = '\n'.join(switch.initial_config)
+        if not config_string:
+            print(f"Warning: Empty configuration for switch {switch.name}")
+            return 'skipped - empty config'
+            
+        # Apply ASCII encoding to the config string
+        ascii_to_go = config_string.encode('ascii')
+        # Turn the ASCII-encoded string into a bytes-like object
+        bytes_to_go = BytesIO(ascii_to_go)
+        fh = BytesIO()
+        
+        # Create tar archive with correct size
+        with tarfile.open(fileobj=fh, mode='w') as tarch:
+            info = tarfile.TarInfo('startup-config')
+            info.size = len(ascii_to_go)  # Use actual config size
+            tarch.addfile(info, bytes_to_go)
+            
+        # Retrieve our tar archive
+        buffer_to_send = fh.getbuffer()
+
         # Access the container by its ID
-        container = await docker.containers.get(switch.docker_container_id)
+        container = await docker_client.containers.get(switch.docker_container_id)
+        print(f"Copying configuration to container {switch.docker_container_id}")
+        
+        # Copy config and execute commands
         await container.put_archive('/', data=buffer_to_send)
         await container.start()
-        await container.exec_run('mv /startup-config /mnt/flash/')
-        await container.stop
+#        print(dir(container))
+        exec_config = await container.exec(cmd=['mv', '/startup-config', '/mnt/flash/'])
+        exec_stream = await exec_config.start(detach=False)
+        output = await exec_stream.read_out()
+        if output.exit_code != 0:
+            print(f"Warning: mv command failed for {switch.name}")
+        await container.stop()  # Call stop() as a method
+        
+        print(f"Successfully configured switch {switch.name}")
+        return 'success'
+        
     except aiodocker.exceptions.DockerError as e:
-            print(f"Docker error: {e}")
-    finally:
-        return 'done'
+        print(f"Docker error for switch {switch.name}: {e}")
+        return f'failed - {str(e)}'
+    except Exception as e:
+        print(f"Unexpected error for switch {switch.name}: {e}")
+        return f'failed - {str(e)}'
 
 async def fetch_json_data_post(session, url, json_in):
     async with session.post(url, json=json_in) as response:
@@ -227,4 +272,3 @@ async def gns3_post(session: str, url: str, method: str, **kwargs) -> str:
         else:
             async with session.put(url) as response:
                 await asyncio.sleep(.2)
-    return response
