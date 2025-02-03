@@ -77,7 +77,7 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
                     nodex = -800
                     nodey = nodey + 200
         switches = [await task for task in tasks]
- 
+
         # Create docker client for RESTful API
         
         docker_client = aiodocker.Docker(url=f"http://{servername}:2375")
@@ -148,7 +148,6 @@ async def docker_api_stuff(switch: Switch, docker_client):
     docker_client : docker.DockerClient
         The Docker client object used to interact with the Docker API.
     """
-    print(f"Processing configuration for switch {switch.name}")
     
     try:
         # Turn a list of strings into a single string with newlines
@@ -156,7 +155,7 @@ async def docker_api_stuff(switch: Switch, docker_client):
         if not config_string:
             print(f"Warning: Empty configuration for switch {switch.name}")
             return 'skipped - empty config'
-            
+
         # Apply ASCII encoding to the config string
         ascii_to_go = config_string.encode('ascii')
         # Turn the ASCII-encoded string into a bytes-like object
@@ -173,22 +172,43 @@ async def docker_api_stuff(switch: Switch, docker_client):
         buffer_to_send = fh.getbuffer()
 
         # Access the container by its ID
+#        print("Working on " + switch.name + " / " + str(switch.docker_container_id))
         container = await docker_client.containers.get(switch.docker_container_id)
+        container_status = await container.show()
+        print(" Is-Running status of the container we just grabbed:  " + str(container_status['State']['Running']))
+
+        #Use the put_archive method to copy the tar archive with our configuration to the container's filesystem
         print(f"Copying configuration to container {switch.docker_container_id}")
-        
-        # Copy config and execute commands
-        await container.put_archive('/', data=buffer_to_send)
+#        put_result = await container.put_archive('/', data=buffer_to_send)
+        try:
+            put_result = await container.put_archive('/', data=buffer_to_send)
+            print("Type of put_result:", type(put_result))
+            print("Length of put_result:", len(put_result))
+        except Exception as e:
+            print("An error occurred:", e)
+
+
         await container.start()
+        container_status = await container.show()
+        print(" Is-Running status of the container we just started:  " + str(container_status['State']['Running']))
+        # Wait for the container to become ready
+        print("Waiting for container to become ready...")
+        if not await wait_for_container_ready(container):
+            print(f"Warning: Container {switch.docker_container_id} did not become ready within the timeout period.")
+            return 'failed - container not ready'
 
         # Execute the mv command to move the startup-config file
         exec_mv = await container.exec(cmd=['mv', '/startup-config', '/mnt/flash/'])
-        #print("Ran the mv command. About to check the result")
-                
+        print("Ran the touch command. About to check the result")
+
         # Check the exit code of the exec command
         exec_result = await exec_mv.inspect()
         if exec_result['ExitCode'] != 0:
-            print(f"Warning: mv command failed for {switch.name}))
-        
+            print(f"Warning: mv command failed for {switch.name}")
+            print(f"Details: ")
+            print(dir(exec_result.values))
+            print(dir(exec_result.keys))
+
         await container.stop()  # Call stop() as a method
         
         print(f"Successfully configured switch {switch.name}")
@@ -200,8 +220,6 @@ async def docker_api_stuff(switch: Switch, docker_client):
     except Exception as e:
         print(f"Unexpected error for switch {switch.name}: {e}")
         return f'failed - {str(e)}'
-
-
 
 
 async def fetch_json_data_post(session, url, json_in):
@@ -216,31 +234,24 @@ async def fetch_json_data_get (session, url, json_in):
 
 
 async def make_a_gns3_node(switch: Switch, session: str, gns3_url: str, nodex: int, nodey: int, prj_id: str, **kwargs) -> Switch:
-
     # Duplicate the existing GNS3 docker template for the device being modeled
     json_data = await fetch_json_data_post(session, gns3_url +'templates/' + switch.gns3_template_id + '/duplicate', json_in=[])
     tmp_template_id = json_data['template_id']
-
     # Change the interface count on the temporary template
-    async with session.put(gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json={'adapters': switch.ethernet_interfaces + 1}) as response:
+    async with session.put(gns3_url + 'templates/' + tmp_template_id, json={'adapters': switch.ethernet_interfaces + 1}) as response:
         await response.text()
-
     # Create the new GNS3 node and capture its GNS3 UID.
     json_data = await fetch_json_data_post(session, gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json_in={'x': nodex, 'y': nodey})
     switch.gns3_node_id = json_data['node_id']
-    
     # Delete the temporary GNS3 template
     async with session.delete(gns3_url +'templates/' + tmp_template_id) as response:
         await response.text()
-
     # Change the name of the newly created node to match the device being modeled
     async with session.put(gns3_url +'projects/' + prj_id + '/nodes/' + switch.gns3_node_id, json={'name': switch.name}) as response:
         await response.text()
-
     # Grab the new node's Docker container's UID
     json_data = await fetch_json_data_get(session, gns3_url +'projects/' + prj_id + '/nodes/' + switch.gns3_node_id, json_in=[])
     switch.docker_container_id = json_data['properties']['container_id']
-
     return switch
 
 async def gns3_post(session: str, url: str, method: str, **kwargs) -> str:
@@ -281,3 +292,31 @@ async def gns3_post(session: str, url: str, method: str, **kwargs) -> str:
         else:
             async with session.put(url) as response:
                 await asyncio.sleep(.2)
+
+async def wait_for_container_ready(container, timeout=20):
+    """
+    Wait for the container to become ready by running a test command.
+
+    Parameters
+    ----------
+    container : aiodocker.Container
+        The container object to monitor.
+    timeout : int
+        Maximum time to wait (in seconds) for the container to become ready.
+
+    Returns
+    -------
+    bool
+        True if the container is ready, False otherwise.
+    """
+    start_time = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        try:
+            running_test = await container.show()
+            exec_result = running_test['State']['Running']
+            if exec_result == True:
+                return True
+        except Exception as e:
+            print(f"Error checking container readiness: {e}")
+        await asyncio.sleep(1)  # Wait for 1 seconds before checking again
+    return False

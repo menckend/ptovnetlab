@@ -180,7 +180,7 @@ def p_to_v(**kwargs) -> str:
     gns3_worker.invoker(servername, gns3_url, switches, gnsprj_id, connections)
 
     # Close the GNS3 project
-    requests.post(gns3_url + 'projects/' + gnsprj_id + '/close')
+    #requests.post(gns3_url + 'projects/' + gnsprj_id + '/close')
     return gns3_url_noapi + gnsprj_id
 
 
