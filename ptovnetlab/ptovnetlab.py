@@ -1,196 +1,249 @@
-"""ptovnetlab module/script
+"""PTovNetLab: Automated Network Lab Creation
 
-Entry-point module for ptovnetlab package. Gathers and parses run-state details
-from a list of Arista network switches. Then creates a GNS3 virtual-
-lab project in which the interrogated devices are emulated."""
+This module converts physical network switch configurations into a GNS3 virtual lab.
+"""
 
 import sys
+import logging
+from typing import List, Dict, Optional, Tuple
 from getpass import getpass
 import requests
+
 from ptovnetlab import arista_poller, arista_sanitizer, gns3_worker
 from ptovnetlab.data_classes import Switch, Connection
 
+# Custom Exceptions
+class PTovNetLabError(Exception):
+    """Base exception for PTovNetLab errors."""
+    pass
 
-def read_file(file_to_read: str) -> list:
-    """Open a file and return its contents as a list of strings
+class InputValidationError(PTovNetLabError):
+    """Raised when input validation fails."""
+    pass
 
-    Parameters
-    ----------
-    file_to_read : str
-        The path of the file to be read
+class NetworkConfigurationError(PTovNetLabError):
+    """Raised when network configuration processing fails."""
+    pass
 
-    Returns
-    -------
-    list of lines : list
-        The contents of the file as a list of strings
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def validate_input(
+    filename: Optional[str] = None, 
+    switchlist: Optional[List[str]] = None, 
+    prj_name: Optional[str] = None, 
+    servername: Optional[str] = None
+) -> None:
     """
-    # Open the file in read mode
-    opened_file = open(file_to_read, "r")
-    # Each line of the file into an entry in a list called list_of_lines
-    list_of_lines = opened_file.read().splitlines()
-    # Close the file that was being read
-    opened_file.close()
-    return list_of_lines
+    Validate input parameters for the virtual lab creation.
 
+    Args:
+        filename: Optional path to a file containing switch names
+        switchlist: Optional list of switch names
+        prj_name: Optional project name
+        servername: Optional GNS3 server name
 
-def list_search(list_to_search: list, item_to_find: str) -> bool:
-    """Search a list for a specified string
-
-    Parameters
-    ----------
-    list_to_search : list
-        The list to be searched
-    item_to_find : str
-        The item to search for
+    Raises:
+        InputValidationError: If input parameters are invalid
     """
-    for val in list_to_search:
-        if val == item_to_find:
-            return True
-    return False
-
-
-def predelimiter(string, delimiter):
-  """Returns the section of a string before the first instance of a delimiter."""
-
-  index = string.find(delimiter)
-  if index == -1:
-    return string  # Delimiter not found, return the whole string
-  else:
-    return string[:index]
-
-
-def p_to_v(**kwargs) -> str:
-    """Pull switch run-state data, massage it, and turn it into a GNS3 lab
-
-    Parameters
-    ---------
-    username : str
-        The username to be used in authenticating eapi calls to the switches
-    passwd : str
-        The password to be used in authenticating eapi calls to the switches
-    filename : str
-        Name of the file containing the list of switches to be interrogated
-    switchlist : list
-        List object of names of switches to be interrogated.
-    servername : str
-        The name of the remote GNS3/Docker server
-    prjname : str
-        The name of the project to create on the GNS3 server
-
-    Returns
-    -------
-    result : str
-        URL to access the created GNS3 project
-    """
-    # Set default values for all anticipated arguments
-    filename = kwargs.get('filename', '')
-    username = kwargs.get('username', '')
-    passwd = kwargs.get('passwd', '')
-    switchlist = kwargs.get('switchlist', [])
-    servername = kwargs.get('servername', '')
-    prj_name = kwargs.get('prjname', '')
-    run_type = kwargs.get('runtype', 'module')
-
-    # Handle interactive input if needed
-    if not filename and not switchlist:
-        print("Enter a switch name and press enter.")
-        print("(Press Enter without entering a name when done.")
-        while True:
-            line = input()
-            if not line:
-                break
-            switchlist.append(line)
-    
     if filename and switchlist:
-        print("Don't pass both filename_arg AND switchlist_arg; choose one or the other.")
-        exit(1)
+        raise InputValidationError(
+            "Cannot provide both filename and switchlist. Choose one method."
+        )
     
+    if not (filename or switchlist):
+        logger.warning("No switch sources provided. Entering interactive mode.")
+
     if not prj_name:
-        prj_name = input('Enter a value to use for the GNS project name when modeling the production switches: ')
-    
+        raise InputValidationError("Project name is required")
+
     if not servername:
-        servername = input('Enter the name of the GNS3 server: ')
-    
-    # Read the input switch-list file, if a filename was provided
+        raise InputValidationError("GNS3 server name is required")
+
+def collect_switch_list(
+    filename: Optional[str] = None, 
+    switchlist: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Collect switch list from file or interactive input.
+
+    Args:
+        filename: Optional path to a file containing switch names
+        switchlist: Optional list of switch names
+
+    Returns:
+        List of switch names
+    """
     if filename:
-        switchlist = read_file(filename)
-
-    # Remove any blank entries from switchlist
-    switchlist = list(filter(None, switchlist))
+        try:
+            with open(filename, 'r') as f:
+                return [line.strip() for line in f if line.strip()]
+        except IOError as e:
+            raise InputValidationError(f"Error reading switch list file: {e}")
     
-    # Prompt for switch/EOS credentials if none were provided
-    if not username:
-        username = input('Enter username for Arista EOS login: ')
-    if not passwd:
-        passwd = getpass('Enter password for Arista EOS login: ')
+    if switchlist:
+        return switchlist
 
-    # Call arista_poller to get runstate from the Arista switches
-    switches, connections = arista_poller.invoker(switchlist, username, passwd, run_type)
+    # Interactive input
+    logger.info("Enter switch names (press Enter without input to finish):")
+    interactive_list = []
+    while True:
+        switch = input().strip()
+        if not switch:
+            break
+        interactive_list.append(switch)
+    
+    return interactive_list
 
-    # Clean up configs for virtual lab use
+def authenticate_switches() -> Tuple[str, str]:
+    """
+    Authenticate switches interactively.
+
+    Returns:
+        Tuple of (username, password)
+    """
+    username = input('Enter username for Arista EOS login: ')
+    passwd = getpass('Enter password for Arista EOS login: ')
+    return username, passwd
+
+def process_switch_configurations(
+    switches: List[Switch], 
+    connections: List[Connection]
+) -> Tuple[List[Switch], List[Connection]]:
+    """
+    Process and sanitize switch configurations.
+
+    Args:
+        switches: List of switches
+        connections: List of connections
+
+    Returns:
+        Processed switches and connections
+    """
+    # Sanitize configurations
     for switch in switches:
         switch = arista_sanitizer.eos_to_ceos(switch)
 
-    # Filter out connections that don't involve our switches
-    our_lldp_ids = [switch.lldp_system_name for switch in switches]
-    connections = [conn for conn in connections 
-                  if conn.switch_a in our_lldp_ids and conn.switch_b in our_lldp_ids]
+    # Filter connections involving only the current switches
+    our_lldp_ids = {switch.lldp_system_name for switch in switches}
+    connections = [
+        conn for conn in connections 
+        if conn.switch_a in our_lldp_ids and conn.switch_b in our_lldp_ids
+    ]
 
-    # Remove duplicate connections (A->B is same as B->A)
+    # Remove duplicate connections
     unique_connections = []
     for conn in connections:
-        reverse_exists = any(c.switch_a == conn.switch_b and 
-                           c.switch_b == conn.switch_a and
-                           c.port_a == conn.port_b and 
-                           c.port_b == conn.port_a 
-                           for c in unique_connections)
-        if not reverse_exists:
+        if not any(
+            c.switch_a == conn.switch_b and 
+            c.switch_b == conn.switch_a and
+            c.port_a == conn.port_b and 
+            c.port_b == conn.port_a 
+            for c in unique_connections
+        ):
             unique_connections.append(conn)
-    connections = unique_connections
 
-    # Clean up management interfaces in connections
-    for conn in connections:
-        if conn.port_a.lower().startswith('management'):
-            conn.port_a = 'ethernet0'
-        if conn.port_b.lower().startswith('management'):
-            conn.port_b = 'ethernet0'
+    # Clean management interfaces
+    for conn in unique_connections:
+        conn.port_a = 'ethernet0' if conn.port_a.lower().startswith('management') else conn.port_a
+        conn.port_b = 'ethernet0' if conn.port_b.lower().startswith('management') else conn.port_b
 
-    # Set GNS3 URL
-    gns3_url = f'http://{servername}:3080/v2/'
-    gns3_url_noapi = f'http://{servername}:3080/static/web-ui/server/1/project/'
+    return switches, unique_connections
 
-    # Get GNS3 templates and map EOS versions to template IDs
-    r = requests.get(gns3_url + 'templates', auth=('admin', 'admin'), timeout=20)
-    image_map = {x['image'].lower(): x['template_id'] 
-                 for x in r.json() 
-                 if x['template_type'] == 'docker'}
+def p_to_v(**kwargs) -> str:
+    """
+    Convert physical network to virtual lab.
 
-    # Set template IDs for switches based on their EOS version
-    for switch in switches:
-        eos_version = 'ceos:' + predelimiter(switch.eos_version.lower(), '-')
-        if eos_version in image_map:
-            switch.gns3_template_id = image_map[eos_version]
+    Args:
+        **kwargs: Flexible keyword arguments for configuration
 
-    # Create new GNS3 project
-    gnsprj_id = requests.post(gns3_url + 'projects', 
-                            json={'name': prj_name},
-                            timeout=20).json()['project_id']
+    Returns:
+        URL to the created GNS3 project
+    """
+    try:
+        # Extract and validate inputs
+        filename = kwargs.get('filename', '')
+        switchlist = kwargs.get('switchlist', [])
+        username = kwargs.get('username', '')
+        passwd = kwargs.get('passwd', '')
+        servername = kwargs.get('servername', '')
+        prj_name = kwargs.get('prjname', '')
+        run_type = kwargs.get('runtype', 'module')
 
-    # Create nodes and connections in GNS3
-    gns3_worker.invoker(servername, gns3_url, switches, gnsprj_id, connections)
+        validate_input(filename, switchlist, prj_name, servername)
+        
+        # Collect switch list
+        switchlist = collect_switch_list(filename, switchlist)
+        
+        # Authenticate if credentials not provided
+        if not (username and passwd):
+            username, passwd = authenticate_switches()
 
-    # Close the GNS3 project
-    #requests.post(gns3_url + 'projects/' + gnsprj_id + '/close')
-    return gns3_url_noapi + gnsprj_id
+        # Poll switch configurations
+        switches, connections = arista_poller.invoker(switchlist, username, passwd, run_type)
+        
+        # Process switch configurations
+        switches, connections = process_switch_configurations(switches, connections)
 
+        # Set GNS3 URLs
+        gns3_url = f'http://{servername}:3080/v2/'
+        gns3_url_noapi = f'http://{servername}:3080/static/web-ui/server/1/project/'
+
+        # Get and map GNS3 templates
+        r = requests.get(gns3_url + 'templates', auth=('admin', 'admin'), timeout=20)
+        image_map = {
+            x['image'].lower(): x['template_id'] 
+            for x in r.json() 
+            if x['template_type'] == 'docker'
+        }
+
+        # Set template IDs for switches
+        for switch in switches:
+            eos_version = 'ceos:' + switch.eos_version.lower().split('-')[0]
+            if eos_version in image_map:
+                switch.gns3_template_id = image_map[eos_version]
+
+        # Create GNS3 project
+        gnsprj_id = requests.post(
+            gns3_url + 'projects', 
+            json={'name': prj_name},
+            timeout=20
+        ).json()['project_id']
+
+        # Create nodes and connections
+        gns3_worker.invoker(servername, gns3_url, switches, gnsprj_id, connections)
+
+        logger.info(f"Successfully created GNS3 project: {prj_name}")
+        return gns3_url_noapi + gnsprj_id
+
+    except (InputValidationError, NetworkConfigurationError) as e:
+        logger.error(f"Configuration error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in virtual lab creation: {e}")
+        raise PTovNetLabError(f"Virtual lab creation failed: {e}")
+
+def main():
+    """
+    Main entry point for script execution.
+    """
+    try:
+        kwdict = {}
+        for arg in sys.argv[1:]:
+            splarg = arg.split('=')
+            if splarg[0] == 'switchlist':
+                kwdict[splarg[0]] = splarg[1].split()
+            else:
+                kwdict[splarg[0]] = splarg[1]
+        kwdict['runtype'] = 'script'
+        p_to_v(**kwdict)
+    except PTovNetLabError as e:
+        logger.error(f"PTovNetLab execution failed: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    kwdict = {}
-    for arg in sys.argv[1:]:
-        splarg = arg.split('=')
-        if splarg[0] == 'switchlist':
-            kwdict[splarg[0]] = splarg[1].split()
-        else:
-            kwdict[splarg[0]] = splarg[1]
-    kwdict['runtype'] = 'script'
-    p_to_v(**kwdict)
+    main()
