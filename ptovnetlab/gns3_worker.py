@@ -1,452 +1,533 @@
-"""gns3_worker.py
+#!/usr/bin/env python3
+"""
+GNS3 Network Topology Management Module
 
-Creates project and nodes on GNS3 server and then populates their configuration."""
+This module provides asynchronous functionality for creating and 
+configuring network topologies in GNS3, including device creation, 
+configuration, and network infrastructure setup.
+"""
 
 import asyncio
+import logging
 from io import BytesIO
 import tarfile
-import requests
+from typing import List, Dict, Optional, Union, Tuple, Any
+
 import aiohttp
 import aiodocker
 from aiodocker import Docker as docker
+
 from ptovnetlab.data_classes import Switch, Connection
 
-def invoker(servername: str, gns3_url: str, switches: list[Switch],
-            prj_id: str, connections: list[Connection]):
-    """Add nodes to the new GNS3 project and push a copy of the configuration files
-    to their substrate docker containers. Use asyncio/aiohttp to let post requests
-    with long completion time run in the background using cooperative multitasking
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-    Parameters
-    ----------
-    servername : str
-        The name of the aiohttp.ClientSession object used for the connections
-    gns3_url : str
-        The URL to be posted to the GNS3 server
-    switches : list[Switch]
-        List of Switch objects to be emulated
-    prj_id : str
-        The GNS3 project ID
-    connections : list[Connection]
-        List of connections to make between the GNS3 nodes
+class GNS3WorkerError(Exception):
+    """Custom exception for GNS3 Worker related errors."""
+    pass
+
+class ContainerConfigurationError(GNS3WorkerError):
+    """Exception raised for errors during container configuration."""
+    pass
+
+def invoker(
+    servername: str, 
+    gns3_url: str, 
+    switches: List[Switch],
+    prj_id: str, 
+    connections: List[Connection]
+) -> str:
     """
+    Synchronous entry point for creating GNS3 project nodes and connections.
 
-    print('')
-    print('Creating cEOS nodes in GNS3 project and pushing startup configs to each.')
+    This function provides a synchronous wrapper for the asynchronous main_job,
+    allowing the module to be called from synchronous code.
 
-    # Call asyncio.run against the main_job function
-    asyncio.run(main_job(servername, gns3_url, switches, prj_id, connections))
+    Args:
+        servername (str): The name of the aiohttp.ClientSession object
+        gns3_url (str): The URL for the GNS3 server
+        switches (List[Switch]): List of Switch objects to be emulated
+        prj_id (str): The GNS3 project ID
+        connections (List[Connection]): List of connections to make between nodes
 
+    Returns:
+        str: Status message indicating completion or error
 
-async def main_job(servername: str, gns3_url: str, switches: list[Switch],
-                  prj_id: str, connections: list[Connection]):
-                
-    """Iterate through the list of devices to be modeled and instantiate them in GNS3.
-
-    Parameters
-    ----------
-    servername : str
-        The name of the aiohttp.ClientSession object used for the connections
-    gns3_url : str
-        The URL to be posted to the GNS3 server
-    switches : list[Switch]
-        List of Switch objects to be emulated
-    prj_id : str
-        The GNS3 project ID
-    connections : list[Connection]
-        List of connections to make between the GNS3 nodes
+    Raises:
+        GNS3WorkerError: If there are issues during the GNS3 project setup
     """
-    print('')
-    print('Creating the nodes in the GNS3 project.')
+    try:
+        logger.info('Initiating GNS3 project node and connection creation')
+        result = asyncio.run(
+            main_job(servername, gns3_url, switches, prj_id, connections)
+        )
+        logger.info('GNS3 project setup completed successfully')
+        return result
+    except Exception as e:
+        logger.error(f'GNS3 project setup failed: {e}')
+        raise GNS3WorkerError(f'Project setup failed: {e}')
+
+async def main_job(
+    servername: str, 
+    gns3_url: str, 
+    switches: List[Switch],
+    prj_id: str, 
+    connections: List[Connection]
+) -> str:
+    """
+    Asynchronously create GNS3 nodes, configure containers, and establish connections.
+
+    Args:
+        servername (str): The name of the aiohttp.ClientSession object
+        gns3_url (str): The URL for the GNS3 server
+        switches (List[Switch]): List of Switch objects to be emulated
+        prj_id (str): The GNS3 project ID
+        connections (List[Connection]): List of connections to make between nodes
+
+    Returns:
+        str: Status message indicating completion
+    """
+    logger.info('Creating nodes in the GNS3 project.')
+    
+    # Configure session timeout
     timeout_seconds = 30
-    session_timeout = aiohttp.ClientTimeout(total=None,sock_connect=timeout_seconds,sock_read=timeout_seconds)
-    async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        # Set x/y coordinates for the first node on the project
-        nodex = -825
-        nodey = -375
+    session_timeout = aiohttp.ClientTimeout(
+        total=None, 
+        sock_connect=timeout_seconds, 
+        sock_read=timeout_seconds
+    )
 
+    async with aiohttp.ClientSession(timeout=session_timeout) as session:
+        # Position nodes in the project
+        nodex, nodey = -825, -375
+
+        # Create nodes
         async with asyncio.TaskGroup() as tg1:
-            tasks = []
+            node_tasks = []
             for switch in switches:
-                # Call the function to make a bunch of API calls to GNS3server for a new node
-                task = tg1.create_task(make_a_gns3_node(switch, session, gns3_url, nodex, nodey, prj_id))
-                tasks.append(task)
-                # Increment x/y coordinates for the *next* switch to be instantiated
+                task = tg1.create_task(
+                    make_a_gns3_node(
+                        switch, session, gns3_url, nodex, nodey, prj_id
+                    )
+                )
+                node_tasks.append(task)
+                
+                # Update node positioning
                 nodex += 150
                 if nodex > 400:
                     nodex = -800
-                    nodey = nodey + 200
-        switches = [await task for task in tasks]
+                    nodey += 200
 
-        # Create docker client for RESTful API
-        
+        # Update switches with node information
+        switches = [await task for task in node_tasks]
+
+        # Configure Docker containers
         docker_client = aiodocker.Docker(url=f"http://{servername}:2375")
         try:
             async with asyncio.TaskGroup() as tg2:
-                tasks = []
+                config_tasks = []
                 for switch in switches:
-                    # Call the function that starts the new nodes' containers and
-                    # pushes the configuration to them before stopping them
-                    task = tg2.create_task(docker_api_stuff(switch, docker_client, servername))
-                    tasks.append(task)
-                # Wait for all tasks to complete
-                results = [await task for task in tasks]
-                print("Configuration copying completed for all switches")
+                    task = tg2.create_task(
+                        docker_api_config(switch, docker_client, servername)
+                    )
+                    config_tasks.append(task)
+                
+                # Wait for configuration tasks
+                results = [await task for task in config_tasks]
+                logger.info("Configuration copying completed for all switches")
         finally:
             await docker_client.close()
 
+        # Establish connections between nodes
         async with asyncio.TaskGroup() as tg3:
             for connection in connections:
-                a_node_id = None
-                b_node_id = None
-                for switch in switches:
-                    if connection.switch_a == switch.lldp_system_name:
-                        a_node_id = switch.gns3_node_id
-                    if connection.switch_b == switch.lldp_system_name:
-                        b_node_id = switch.gns3_node_id
+                a_node_id, b_node_id = _find_connection_nodes(switches, connection)
                 
                 if a_node_id and b_node_id:
                     try:
-                        # More robust port parsing with error handling
-                        def parse_port(port):
-                            if not port.lower().startswith('ethernet'):
-                                raise ValueError(f"Invalid port format: {port}. Port must start with 'ethernet'")
-                            # Extract numbers after 'ethernet', before any '/'
-                            port_base = port.lower().split('/')[0]
-                            adapter_num = ''.join(filter(str.isdigit, port_base))
-                            if not adapter_num:
-                                raise ValueError(f"Could not extract adapter number from port: {port}")
-                            return adapter_num
+                        a_adapter = _parse_port(connection.port_a)
+                        b_adapter = _parse_port(connection.port_b)
 
-                        a_node_adapter_nbr = parse_port(connection.port_a)
-                        b_node_adapter_nbr = parse_port(connection.port_b)
+                        make_link_url = f"{gns3_url}projects/{prj_id}/links"
+                        make_link_json = {
+                            'nodes': [
+                                {
+                                    'adapter_number': int(a_adapter),
+                                    'node_id': a_node_id, 
+                                    'port_number': 0
+                                },
+                                {
+                                    'adapter_number': int(b_adapter),
+                                    'node_id': b_node_id, 
+                                    'port_number': 0
+                                }
+                            ]
+                        }
 
-                        make_link_url = gns3_url + 'projects/' + prj_id + '/links'
-                    except (IndexError, ValueError) as e:
-                        print(f"Error parsing ports for connection {connection.switch_a}:{connection.port_a} -> {connection.switch_b}:{connection.port_b}")
-                        print(f"Error details: {str(e)}")
-                        continue
-                    make_link_json = {'nodes': [{'adapter_number': int(a_node_adapter_nbr),
-                                            'node_id': a_node_id, 'port_number': 0},
-                                            {'adapter_number': int(b_node_adapter_nbr),
-                                            'node_id': b_node_id, 'port_number': 0}]}
+                        tg3.create_task(
+                            gns3_post(
+                                session, 
+                                str(make_link_url), 
+                                'post', 
+                                jsondata=make_link_json
+                            )
+                        )
+                    except ValueError as e:
+                        logger.error(
+                            f"Error parsing ports for connection "
+                            f"{connection.switch_a}:{connection.port_a} -> "
+                            f"{connection.switch_b}:{connection.port_b}: {e}"
+                        )
 
-                    tg3.create_task(gns3_post(session, str(make_link_url), 'post', jsondata=make_link_json))
         return "Virtual Network Lab is ready to run."
 
-
-
-
-async def docker_api_stuff(switch: Switch, docker_client, servername: str = 'localhost'):
+def _find_connection_nodes(
+    switches: List[Switch], 
+    connection: Connection
+) -> Tuple[Optional[str], Optional[str]]:
     """
-    Convert config from list of strings to a string and copy it to the container
+    Find node IDs for a given connection.
 
-    Parameters
-    ----------
-    switch : Switch
-        The Switch object containing the configuration and container details
-    docker_client : docker.DockerClient
-        The Docker client object used to interact with the Docker API.
-    servername : str
-        The hostname or IP address of the Docker daemon (default: 'localhost')
+    Args:
+        switches (List[Switch]): List of switches
+        connection (Connection): Connection to find nodes for
+
+    Returns:
+        Tuple[Optional[str], Optional[str]]: Node IDs for switches A and B
     """
+    a_node_id = next(
+        (switch.gns3_node_id for switch in switches 
+         if switch.lldp_system_name == connection.switch_a), 
+        None
+    )
+    b_node_id = next(
+        (switch.gns3_node_id for switch in switches 
+         if switch.lldp_system_name == connection.switch_b), 
+        None
+    )
+    return a_node_id, b_node_id
+
+def _parse_port(port: str) -> str:
+    """
+    Parse port string to extract adapter number.
+
+    Args:
+        port (str): Port string (e.g., 'Ethernet1/1')
+
+    Returns:
+        str: Extracted adapter number
+
+    Raises:
+        ValueError: If port format is invalid
+    """
+    if not port.lower().startswith('ethernet'):
+        raise ValueError(f"Invalid port format: {port}. Port must start with 'ethernet'")
     
+    # Extract numbers after 'ethernet', before any '/'
+    port_base = port.lower().split('/')[0]
+    adapter_num = ''.join(filter(str.isdigit, port_base))
+    
+    if not adapter_num:
+        raise ValueError(f"Could not extract adapter number from port: {port}")
+    
+    return adapter_num
+
+async def docker_api_config(
+    switch: Switch, 
+    docker_client: aiodocker.Docker, 
+    servername: str = 'localhost'
+) -> str:
+    """
+    Configure Docker container with switch startup configuration.
+
+    Args:
+        switch (Switch): Switch object containing configuration
+        docker_client (aiodocker.Docker): Docker client for API interactions
+        servername (str, optional): Docker daemon hostname. Defaults to 'localhost'.
+
+    Returns:
+        str: Configuration status
+    """
     try:
-        print(f"\n=== Starting configuration for switch {switch.name} ===")
-        # Create a session for direct Docker API calls
+        logger.info(f"Starting configuration for switch {switch.name}")
+        
+        # Validate configuration
+        if not switch.initial_config:
+            logger.warning(f"Empty configuration for switch {switch.name}")
+            return 'skipped - empty config'
+
+        # Prepare configuration string
+        config_string = '\n'.join(switch.initial_config)
+        ascii_config = config_string.encode('ascii')
+        
+        # Create tar archive
+        fh = BytesIO()
+        with tarfile.open(fileobj=fh, mode='w') as tarch:
+            info = tarfile.TarInfo('startup-config')
+            info.size = len(ascii_config)
+            bytes_to_go = BytesIO(ascii_config)
+            tarch.addfile(info, bytes_to_go)
+        
+        fh.seek(0)
+        archive_content = fh.read()
+        
+        logger.info(f"Configuration archive created for {switch.name}")
+
+        # Async Docker API session
         async with aiohttp.ClientSession(base_url=f"http://{servername}:2375") as session:
-            # Get Docker version info
-            async with session.get("/version") as response:
-                if response.status == 200:
-                    version_info = await response.json()
-                    print(f"Docker API Version: {version_info.get('Version', 'unknown')}")
-                else:
-                    print(f"Warning: Could not get Docker version. Status: {response.status}")
-            # Turn a list of strings into a single string with newlines
-            config_string = '\n'.join(switch.initial_config)
-            if not config_string:
-                print(f"Warning: Empty configuration for switch {switch.name}")
-                return 'skipped - empty config'
-
-            print(f"\n=== Preparing configuration archive ===")
-            # Apply ASCII encoding to the config string
-            ascii_to_go = config_string.encode('ascii')
-            print(f"Configuration size: {len(ascii_to_go)} bytes")
-            
-            # Create tar archive
-            fh = BytesIO()
-            with tarfile.open(fileobj=fh, mode='w') as tarch:
-                info = tarfile.TarInfo('startup-config')
-                info.size = len(ascii_to_go)
-                bytes_to_go = BytesIO(ascii_to_go)
-                tarch.addfile(info, bytes_to_go)
-            
-            # Get archive content
-            fh.seek(0)
-            archive_content = fh.read()
-            print(f"Tar archive size: {len(archive_content)} bytes")
-
-            print(f"\n=== Accessing container {switch.docker_container_id} ===")
-            # Get container info
-            async with session.get(f"/containers/{switch.docker_container_id}/json") as response:
-                if response.status == 200:
-                    container_info = await response.json()
-                    print(f"Container state: {container_info['State']}")
-                else:
-                    print(f"Warning: Could not get container info. Status: {response.status}")
-                    return 'failed - container info error'
-
-            print(f"\n=== Starting container ===")
             # Start container
-            async with session.post(f"/containers/{switch.docker_container_id}/start") as response:
-                if response.status not in [204, 304]:
-                    print(f"Warning: Could not start container. Status: {response.status}")
-                    return 'failed - container start error'
-
-            print("Waiting for container to become ready...")
-            # Wait for container to be ready
-            start_time = asyncio.get_event_loop().time()
-            while asyncio.get_event_loop().time() - start_time < 20:
-                async with session.get(f"/containers/{switch.docker_container_id}/json") as response:
-                    if response.status == 200:
-                        container_info = await response.json()
-                        if container_info['State']['Running']:
-                            break
-                await asyncio.sleep(1)
-            else:
-                print(f"Warning: Container {switch.docker_container_id} did not become ready")
-                return 'failed - container not ready'
-
-            print(f"\n=== Verifying container filesystem ===")
-            # Create exec instance for ls command
-            async with session.post(
-                f"/containers/{switch.docker_container_id}/exec",
-                json={
-                    "AttachStdout": True,
-                    "AttachStderr": True,
-                    "Cmd": ["ls", "-la", "/"]
-                }
-            ) as response:
-                if response.status == 201:
-                    exec_data = await response.json()
-                    exec_id = exec_data['Id']
-                    
-                    # Start exec instance with raw stream handling
-                    headers = {'Content-Type': 'application/json'}
-                    async with session.post(
-                        f"/exec/{exec_id}/start",
-                        json={"Detach": False, "Tty": False},
-                        headers=headers
-                    ) as exec_response:
-                        if exec_response.status == 200:
-                            # Read the response as chunks
-                            chunks = []
-                            async for chunk in exec_response.content.iter_any():
-                                print(f"Debug - Chunk length: {len(chunk)}")
-                                if len(chunk) > 0:
-                                    # First byte is stream type (stdout/stderr)
-                                    stream_type = chunk[0]
-                                    # Next 3 bytes are the size
-                                    size = int.from_bytes(chunk[1:4], byteorder='big')
-                                    # Rest is the actual content
-                                    content = chunk[4:4+size]
-                                    chunks.append(content)
-                            
-                            # Combine all chunks
-                            output = b''.join(chunks)
-                            print(f"Debug - Combined output length: {len(output)}")
-                            try:
-                                decoded = output.decode('utf-8')
-                            except UnicodeDecodeError as e:
-                                print(f"Debug - UTF-8 decode error: {e}")
-                                decoded = output.decode('latin-1')
-                            print(f"Initial filesystem state:\n{decoded}")
-                        else:
-                            print(f"Warning: Exec start failed. Status: {exec_response.status}")
-
-            print(f"\n=== Copying configuration to container ===")
-            # Copy archive to container
-            headers = {'Content-Type': 'application/x-tar'}
-            async with session.put(
-                f"/containers/{switch.docker_container_id}/archive",
-                params={'path': '/'},
-                headers=headers,
-                data=archive_content
-            ) as response:
-                if response.status == 200:
-                    print("Configuration file copied successfully")
-                else:
-                    print(f"Error copying configuration. Status: {response.status}")
-                    return 'failed - file copy error'
-
-            print(f"\n=== Moving configuration file ===")
-            # Create exec instance for mv command
-            async with session.post(
-                f"/containers/{switch.docker_container_id}/exec",
-                json={
-                    "AttachStdout": True,
-                    "AttachStderr": True,
-                    "Cmd": ["mv", "/startup-config", "/mnt/flash/"]
-                }
-            ) as response:
-                if response.status == 201:
-                    exec_data = await response.json()
-                    exec_id = exec_data['Id']
-                    
-                    # Start exec instance with raw stream handling
-                    headers = {'Content-Type': 'application/json'}
-                    async with session.post(
-                        f"/exec/{exec_id}/start",
-                        json={"Detach": False, "Tty": False},
-                        headers=headers
-                    ) as exec_response:
-                        if exec_response.status == 200:
-                            # Read the response as chunks
-                            chunks = []
-                            async for chunk in exec_response.content.iter_any():
-                                print(f"Debug - Chunk length: {len(chunk)}")
-                                if len(chunk) > 0:
-                                    # First byte is stream type (stdout/stderr)
-                                    stream_type = chunk[0]
-                                    # Next 3 bytes are the size
-                                    size = int.from_bytes(chunk[1:4], byteorder='big')
-                                    # Rest is the actual content
-                                    content = chunk[4:4+size]
-                                    chunks.append(content)
-                            
-                            # Combine all chunks
-                            output = b''.join(chunks)
-                            print(f"Debug - Combined output length: {len(output)}")
-                            try:
-                                decoded = output.decode('utf-8')
-                            except UnicodeDecodeError as e:
-                                print(f"Debug - UTF-8 decode error: {e}")
-                                decoded = output.decode('latin-1')
-                            print(f"mv command output:\n{decoded if decoded.strip() else 'No output'}")
-                            
-                            # Check exec result
-                            async with session.get(f"/exec/{exec_id}/json") as inspect_response:
-                                if inspect_response.status == 200:
-                                    inspect_data = await inspect_response.json()
-                                    if inspect_data.get('ExitCode', 1) != 0:
-                                        print(f"Warning: mv command failed")
-                                        return 'failed - mv command error'
-                                else:
-                                    print(f"Warning: Could not get exec result. Status: {inspect_response.status}")
-                        else:
-                            print(f"Warning: mv command exec failed. Status: {exec_response.status}")
-                            return 'failed - mv command error'
-
-            print(f"\n=== Stopping container ===")
+            await _start_container(session, switch.docker_container_id)
+            
+            # Copy configuration to container
+            await _copy_config_to_container(
+                session, 
+                switch.docker_container_id, 
+                archive_content
+            )
+            
+            # Move configuration file
+            await _move_config_file(session, switch.docker_container_id)
+            
             # Stop container
-            async with session.post(f"/containers/{switch.docker_container_id}/stop") as response:
-                if response.status not in [204, 304]:
-                    print(f"Warning: Could not stop container. Status: {response.status}")
-                    return 'failed - container stop error'
-        
-            print(f"\n=== Successfully configured switch {switch.name} ===")
-            return 'success'
-        
+            await _stop_container(session, switch.docker_container_id)
+
+        logger.info(f"Successfully configured switch {switch.name}")
+        return 'success'
+
     except Exception as e:
-        print(f"Error configuring switch {switch.name}: {e}")
+        logger.error(f"Error configuring switch {switch.name}: {e}")
         return f'failed - {str(e)}'
 
-
-async def fetch_json_data_post(session, url, json_in):
-    async with session.post(url, json=json_in) as response:
-        json_data = await response.json()
-        return json_data
-
-async def fetch_json_data_get (session, url, json_in):
-    async with session.get(url, json=json_in) as response:
-        json_data = await response.json()
-        return json_data
-
-
-async def make_a_gns3_node(switch: Switch, session: str, gns3_url: str, nodex: int, nodey: int, prj_id: str, **kwargs) -> Switch:
-    # Duplicate the existing GNS3 docker template for the device being modeled
-    json_data = await fetch_json_data_post(session, gns3_url +'templates/' + switch.gns3_template_id + '/duplicate', json_in=[])
-    tmp_template_id = json_data['template_id']
-    # Change the interface count on the temporary template
-    async with session.put(gns3_url + 'templates/' + tmp_template_id, json={'adapters': switch.ethernet_interfaces + 1}) as response:
-        await response.text()
-    # Create the new GNS3 node and capture its GNS3 UID.
-    json_data = await fetch_json_data_post(session, gns3_url +'projects/' + prj_id + '/templates/' + tmp_template_id, json_in={'x': nodex, 'y': nodey})
-    switch.gns3_node_id = json_data['node_id']
-    # Delete the temporary GNS3 template
-    async with session.delete(gns3_url +'templates/' + tmp_template_id) as response:
-        await response.text()
-    # Change the name of the newly created node to match the device being modeled
-    async with session.put(gns3_url +'projects/' + prj_id + '/nodes/' + switch.gns3_node_id, json={'name': switch.name}) as response:
-        await response.text()
-    # Grab the new node's Docker container's UID
-    json_data = await fetch_json_data_get(session, gns3_url +'projects/' + prj_id + '/nodes/' + switch.gns3_node_id, json_in=[])
-    switch.docker_container_id = json_data['properties']['container_id']
-    return switch
-
-async def gns3_post(session: str, url: str, method: str, **kwargs) -> str:
-    """Send an async POST request to GNS3 server.
-
-    Parameters
-    ----------
-    session : str
-        The name of the aiohttp.ClientSession object used for the connections
-    url : str
-        The URL to be posted to the GNS3 server (includes project ID and node ID)
-    method : str
-        The HTTP method (get, put, post) to be used in the request
-    jsondata : str
-        Optional.  Any JSON to be included with the HTTP request
+async def _start_container(session: aiohttp.ClientSession, container_id: str) -> None:
     """
+    Start a Docker container.
 
-    if 'jsondata' in kwargs:
-        jsondata = kwargs['jsondata']
-    if method == 'post':
-        if 'jsondata' in kwargs:
-            async with session.post(url, json=jsondata) as response:
-                await asyncio.sleep(.2)
-        else:
-            async with session.post(url) as response:
-                await asyncio.sleep(.2)
-    if method == 'get':
-        if 'jsondata' in kwargs:
-            async with session.get(url, json=jsondata) as response:
-                await asyncio.sleep(.2)
-        else:
-            async with session.get(url) as response:
-                await asyncio.sleep(.2)
-    if method == 'put':
-        if jsondata:
-            async with session.put(url, json=kwargs['jsondata']) as response:
-                await asyncio.sleep(.2)
-        else:
-            async with session.put(url) as response:
-                await asyncio.sleep(.2)
+    Args:
+        session (aiohttp.ClientSession): Async HTTP session
+        container_id (str): Docker container ID
 
-async def wait_for_container_ready(container, timeout=20):
+    Raises:
+        ContainerConfigurationError: If container start fails
     """
-    Wait for the container to become ready by running a test command.
-
-    Parameters
-    ----------
-    container : aiodocker.Container
-        The container object to monitor.
-    timeout : int
-        Maximum time to wait (in seconds) for the container to become ready.
-
-    Returns
-    -------
-    bool
-        True if the container is ready, False otherwise.
-    """
+    async with session.post(f"/containers/{container_id}/start") as response:
+        if response.status not in [204, 304]:
+            raise ContainerConfigurationError(
+                f"Could not start container. Status: {response.status}"
+            )
+    
+    # Wait for container to be ready
     start_time = asyncio.get_event_loop().time()
-    while asyncio.get_event_loop().time() - start_time < timeout:
-        try:
-            running_test = await container.show()
-            exec_result = running_test['State']['Running']
-            if exec_result == True:
-                return True
-        except Exception as e:
-            print(f"Error checking container readiness: {e}")
-        await asyncio.sleep(1)  # Wait for 1 seconds before checking again
-    return False
+    while asyncio.get_event_loop().time() - start_time < 20:
+        async with session.get(f"/containers/{container_id}/json") as response:
+            if response.status == 200:
+                container_info = await response.json()
+                if container_info['State']['Running']:
+                    return
+        await asyncio.sleep(1)
+    
+    raise ContainerConfigurationError(f"Container {container_id} did not become ready")
+
+async def _copy_config_to_container(
+    session: aiohttp.ClientSession, 
+    container_id: str, 
+    archive_content: bytes
+) -> None:
+    """
+    Copy configuration archive to container.
+
+    Args:
+        session (aiohttp.ClientSession): Async HTTP session
+        container_id (str): Docker container ID
+        archive_content (bytes): Configuration archive content
+
+    Raises:
+        ContainerConfigurationError: If file copy fails
+    """
+    headers = {'Content-Type': 'application/x-tar'}
+    async with session.put(
+        f"/containers/{container_id}/archive",
+        params={'path': '/'},
+        headers=headers,
+        data=archive_content
+    ) as response:
+        if response.status != 200:
+            raise ContainerConfigurationError(
+                f"Error copying configuration. Status: {response.status}"
+            )
+
+async def _move_config_file(
+    session: aiohttp.ClientSession, 
+    container_id: str
+) -> None:
+    """
+    Move configuration file to correct location in container.
+
+    Args:
+        session (aiohttp.ClientSession): Async HTTP session
+        container_id (str): Docker container ID
+
+    Raises:
+        ContainerConfigurationError: If file move fails
+    """
+    # Create exec instance for mv command
+    async with session.post(
+        f"/containers/{container_id}/exec",
+        json={
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Cmd": ["mv", "/startup-config", "/mnt/flash/"]
+        }
+    ) as response:
+        if response.status != 201:
+            raise ContainerConfigurationError(
+                f"Could not create mv exec. Status: {response.status}"
+            )
+        
+        exec_data = await response.json()
+        exec_id = exec_data['Id']
+
+        # Start exec instance
+        async with session.post(
+            f"/exec/{exec_id}/start",
+            json={"Detach": False, "Tty": False},
+            headers={'Content-Type': 'application/json'}
+        ) as exec_response:
+            if exec_response.status != 200:
+                raise ContainerConfigurationError(
+                    f"mv command exec failed. Status: {exec_response.status}"
+                )
+
+async def _stop_container(
+    session: aiohttp.ClientSession, 
+    container_id: str
+) -> None:
+    """
+    Stop a Docker container.
+
+    Args:
+        session (aiohttp.ClientSession): Async HTTP session
+        container_id (str): Docker container ID
+
+    Raises:
+        ContainerConfigurationError: If container stop fails
+    """
+    async with session.post(f"/containers/{container_id}/stop") as response:
+        if response.status not in [204, 304]:
+            raise ContainerConfigurationError(
+                f"Could not stop container. Status: {response.status}"
+            )
+
+async def make_a_gns3_node(
+    switch: Switch, 
+    session: aiohttp.ClientSession, 
+    gns3_url: str, 
+    nodex: int, 
+    nodey: int, 
+    prj_id: str
+) -> Switch:
+    """
+    Create a GNS3 node for a switch.
+
+    Args:
+        switch (Switch): Switch to create a node for
+        session (aiohttp.ClientSession): Async HTTP session
+        gns3_url (str): Base URL for GNS3 API
+        nodex (int): X coordinate for node placement
+        nodey (int): Y coordinate for node placement
+        prj_id (str): GNS3 project ID
+
+    Returns:
+        Switch: Updated switch with GNS3 node details
+    """
+    try:
+        # Duplicate template
+        async with session.post(
+            f'{gns3_url}templates/{switch.gns3_template_id}/duplicate', 
+            json=[]
+        ) as response:
+            response.raise_for_status()
+            json_data = await response.json()
+            tmp_template_id = json_data['template_id']
+
+        # Update interface count
+        async with session.put(
+            f'{gns3_url}templates/{tmp_template_id}', 
+            json={'adapters': switch.ethernet_interfaces + 1}
+        ) as response:
+            response.raise_for_status()
+
+        # Create node
+        async with session.post(
+            f'{gns3_url}projects/{prj_id}/templates/{tmp_template_id}', 
+            json={'x': nodex, 'y': nodey}
+        ) as response:
+            response.raise_for_status()
+            json_data = await response.json()
+            switch.gns3_node_id = json_data['node_id']
+
+        # Delete temporary template
+        async with session.delete(f'{gns3_url}templates/{tmp_template_id}'):
+            pass
+
+        # Rename node
+        async with session.put(
+            f'{gns3_url}projects/{prj_id}/nodes/{switch.gns3_node_id}', 
+            json={'name': switch.name}
+        ) as response:
+            response.raise_for_status()
+
+        # Get container ID
+        async with session.get(
+            f'{gns3_url}projects/{prj_id}/nodes/{switch.gns3_node_id}'
+        ) as response:
+            response.raise_for_status()
+            json_data = await response.json()
+            switch.docker_container_id = json_data['properties']['container_id']
+
+        return switch
+
+    except aiohttp.ClientResponseError as e:
+        logger.error(f"GNS3 node creation failed: {e}")
+        raise GNS3WorkerError(f"Failed to create GNS3 node: {e}")
+
+async def gns3_post(
+    session: aiohttp.ClientSession, 
+    url: str, 
+    method: str, 
+    **kwargs
+) -> None:
+    """
+    Send an async request to GNS3 server.
+
+    Args:
+        session (aiohttp.ClientSession): Async HTTP session
+        url (str): URL to send request to
+        method (str): HTTP method (get, post, put)
+        **kwargs: Additional arguments for the request
+
+    Raises:
+        GNS3WorkerError: If request fails
+    """
+    try:
+        jsondata = kwargs.get('jsondata', {})
+        
+        if method == 'post':
+            async with session.post(url, json=jsondata) as response:
+                response.raise_for_status()
+        elif method == 'get':
+            async with session.get(url, json=jsondata) as response:
+                response.raise_for_status()
+        elif method == 'put':
+            async with session.put(url, json=jsondata) as response:
+                response.raise_for_status()
+        
+        # Small delay to prevent overwhelming the server
+        await asyncio.sleep(0.2)
+
+    except aiohttp.ClientResponseError as e:
+        logger.error(f"GNS3 API request failed: {e}")
+        raise GNS3WorkerError(f"API request failed: {e}")
