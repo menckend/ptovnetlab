@@ -87,7 +87,7 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
                 for switch in switches:
                     # Call the function that starts the new nodes' containers and
                     # pushes the configuration to them before stopping them
-                    task = tg2.create_task(docker_api_stuff(switch, docker_client))
+                    task = tg2.create_task(docker_api_stuff(switch, docker_client, servername))
                     tasks.append(task)
                 # Wait for all tasks to complete
                 results = [await task for task in tasks]
@@ -137,7 +137,7 @@ async def main_job(servername: str, gns3_url: str, switches: list[Switch],
 
 
 
-async def docker_api_stuff(switch: Switch, docker_client):
+async def docker_api_stuff(switch: Switch, docker_client, servername: str = 'localhost'):
     """
     Convert config from list of strings to a string and copy it to the container
 
@@ -147,78 +147,208 @@ async def docker_api_stuff(switch: Switch, docker_client):
         The Switch object containing the configuration and container details
     docker_client : docker.DockerClient
         The Docker client object used to interact with the Docker API.
+    servername : str
+        The hostname or IP address of the Docker daemon (default: 'localhost')
     """
     
     try:
-        # Turn a list of strings into a single string with newlines
-        config_string = '\n'.join(switch.initial_config)
-        if not config_string:
-            print(f"Warning: Empty configuration for switch {switch.name}")
-            return 'skipped - empty config'
+        print(f"\n=== Starting configuration for switch {switch.name} ===")
+        # Create a session for direct Docker API calls
+        async with aiohttp.ClientSession(base_url=f"http://{servername}:2375") as session:
+            # Get Docker version info
+            async with session.get("/version") as response:
+                if response.status == 200:
+                    version_info = await response.json()
+                    print(f"Docker API Version: {version_info.get('Version', 'unknown')}")
+                else:
+                    print(f"Warning: Could not get Docker version. Status: {response.status}")
+            # Turn a list of strings into a single string with newlines
+            config_string = '\n'.join(switch.initial_config)
+            if not config_string:
+                print(f"Warning: Empty configuration for switch {switch.name}")
+                return 'skipped - empty config'
 
-        # Apply ASCII encoding to the config string
-        ascii_to_go = config_string.encode('ascii')
-        # Turn the ASCII-encoded string into a bytes-like object
-        bytes_to_go = BytesIO(ascii_to_go)
-        fh = BytesIO()
-        
-        # Create tar archive with correct size
-        with tarfile.open(fileobj=fh, mode='w') as tarch:
-            info = tarfile.TarInfo('startup-config')
-            info.size = len(ascii_to_go)  # Use actual config size
-            tarch.addfile(info, bytes_to_go)
+            print(f"\n=== Preparing configuration archive ===")
+            # Apply ASCII encoding to the config string
+            ascii_to_go = config_string.encode('ascii')
+            print(f"Configuration size: {len(ascii_to_go)} bytes")
             
-        # Retrieve our tar archive
-        buffer_to_send = fh.getbuffer()
+            # Create tar archive
+            fh = BytesIO()
+            with tarfile.open(fileobj=fh, mode='w') as tarch:
+                info = tarfile.TarInfo('startup-config')
+                info.size = len(ascii_to_go)
+                bytes_to_go = BytesIO(ascii_to_go)
+                tarch.addfile(info, bytes_to_go)
+            
+            # Get archive content
+            fh.seek(0)
+            archive_content = fh.read()
+            print(f"Tar archive size: {len(archive_content)} bytes")
 
-        # Access the container by its ID
-#        print("Working on " + switch.name + " / " + str(switch.docker_container_id))
-        container = await docker_client.containers.get(switch.docker_container_id)
-        container_status = await container.show()
-        print(" Is-Running status of the container we just grabbed:  " + str(container_status['State']['Running']))
+            print(f"\n=== Accessing container {switch.docker_container_id} ===")
+            # Get container info
+            async with session.get(f"/containers/{switch.docker_container_id}/json") as response:
+                if response.status == 200:
+                    container_info = await response.json()
+                    print(f"Container state: {container_info['State']}")
+                else:
+                    print(f"Warning: Could not get container info. Status: {response.status}")
+                    return 'failed - container info error'
 
-        #Use the put_archive method to copy the tar archive with our configuration to the container's filesystem
-        print(f"Copying configuration to container {switch.docker_container_id}")
-#        put_result = await container.put_archive('/', data=buffer_to_send)
-        try:
-            put_result = await container.put_archive('/', data=buffer_to_send)
-            print("Type of put_result:", type(put_result))
-            print("Length of put_result:", len(put_result))
-        except Exception as e:
-            print("An error occurred:", e)
+            print(f"\n=== Starting container ===")
+            # Start container
+            async with session.post(f"/containers/{switch.docker_container_id}/start") as response:
+                if response.status not in [204, 304]:
+                    print(f"Warning: Could not start container. Status: {response.status}")
+                    return 'failed - container start error'
 
+            print("Waiting for container to become ready...")
+            # Wait for container to be ready
+            start_time = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start_time < 20:
+                async with session.get(f"/containers/{switch.docker_container_id}/json") as response:
+                    if response.status == 200:
+                        container_info = await response.json()
+                        if container_info['State']['Running']:
+                            break
+                await asyncio.sleep(1)
+            else:
+                print(f"Warning: Container {switch.docker_container_id} did not become ready")
+                return 'failed - container not ready'
 
-        await container.start()
-        container_status = await container.show()
-        print(" Is-Running status of the container we just started:  " + str(container_status['State']['Running']))
-        # Wait for the container to become ready
-        print("Waiting for container to become ready...")
-        if not await wait_for_container_ready(container):
-            print(f"Warning: Container {switch.docker_container_id} did not become ready within the timeout period.")
-            return 'failed - container not ready'
+            print(f"\n=== Verifying container filesystem ===")
+            # Create exec instance for ls command
+            async with session.post(
+                f"/containers/{switch.docker_container_id}/exec",
+                json={
+                    "AttachStdout": True,
+                    "AttachStderr": True,
+                    "Cmd": ["ls", "-la", "/"]
+                }
+            ) as response:
+                if response.status == 201:
+                    exec_data = await response.json()
+                    exec_id = exec_data['Id']
+                    
+                    # Start exec instance with raw stream handling
+                    headers = {'Content-Type': 'application/json'}
+                    async with session.post(
+                        f"/exec/{exec_id}/start",
+                        json={"Detach": False, "Tty": False},
+                        headers=headers
+                    ) as exec_response:
+                        if exec_response.status == 200:
+                            # Read the response as chunks
+                            chunks = []
+                            async for chunk in exec_response.content.iter_any():
+                                print(f"Debug - Chunk length: {len(chunk)}")
+                                if len(chunk) > 0:
+                                    # First byte is stream type (stdout/stderr)
+                                    stream_type = chunk[0]
+                                    # Next 3 bytes are the size
+                                    size = int.from_bytes(chunk[1:4], byteorder='big')
+                                    # Rest is the actual content
+                                    content = chunk[4:4+size]
+                                    chunks.append(content)
+                            
+                            # Combine all chunks
+                            output = b''.join(chunks)
+                            print(f"Debug - Combined output length: {len(output)}")
+                            try:
+                                decoded = output.decode('utf-8')
+                            except UnicodeDecodeError as e:
+                                print(f"Debug - UTF-8 decode error: {e}")
+                                decoded = output.decode('latin-1')
+                            print(f"Initial filesystem state:\n{decoded}")
+                        else:
+                            print(f"Warning: Exec start failed. Status: {exec_response.status}")
 
-        # Execute the mv command to move the startup-config file
-        exec_mv = await container.exec(cmd=['mv', '/startup-config', '/mnt/flash/'])
-        print("Ran the touch command. About to check the result")
+            print(f"\n=== Copying configuration to container ===")
+            # Copy archive to container
+            headers = {'Content-Type': 'application/x-tar'}
+            async with session.put(
+                f"/containers/{switch.docker_container_id}/archive",
+                params={'path': '/'},
+                headers=headers,
+                data=archive_content
+            ) as response:
+                if response.status == 200:
+                    print("Configuration file copied successfully")
+                else:
+                    print(f"Error copying configuration. Status: {response.status}")
+                    return 'failed - file copy error'
 
-        # Check the exit code of the exec command
-        exec_result = await exec_mv.inspect()
-        if exec_result['ExitCode'] != 0:
-            print(f"Warning: mv command failed for {switch.name}")
-            print(f"Details: ")
-            print(dir(exec_result.values))
-            print(dir(exec_result.keys))
+            print(f"\n=== Moving configuration file ===")
+            # Create exec instance for mv command
+            async with session.post(
+                f"/containers/{switch.docker_container_id}/exec",
+                json={
+                    "AttachStdout": True,
+                    "AttachStderr": True,
+                    "Cmd": ["mv", "/startup-config", "/mnt/flash/"]
+                }
+            ) as response:
+                if response.status == 201:
+                    exec_data = await response.json()
+                    exec_id = exec_data['Id']
+                    
+                    # Start exec instance with raw stream handling
+                    headers = {'Content-Type': 'application/json'}
+                    async with session.post(
+                        f"/exec/{exec_id}/start",
+                        json={"Detach": False, "Tty": False},
+                        headers=headers
+                    ) as exec_response:
+                        if exec_response.status == 200:
+                            # Read the response as chunks
+                            chunks = []
+                            async for chunk in exec_response.content.iter_any():
+                                print(f"Debug - Chunk length: {len(chunk)}")
+                                if len(chunk) > 0:
+                                    # First byte is stream type (stdout/stderr)
+                                    stream_type = chunk[0]
+                                    # Next 3 bytes are the size
+                                    size = int.from_bytes(chunk[1:4], byteorder='big')
+                                    # Rest is the actual content
+                                    content = chunk[4:4+size]
+                                    chunks.append(content)
+                            
+                            # Combine all chunks
+                            output = b''.join(chunks)
+                            print(f"Debug - Combined output length: {len(output)}")
+                            try:
+                                decoded = output.decode('utf-8')
+                            except UnicodeDecodeError as e:
+                                print(f"Debug - UTF-8 decode error: {e}")
+                                decoded = output.decode('latin-1')
+                            print(f"mv command output:\n{decoded if decoded.strip() else 'No output'}")
+                            
+                            # Check exec result
+                            async with session.get(f"/exec/{exec_id}/json") as inspect_response:
+                                if inspect_response.status == 200:
+                                    inspect_data = await inspect_response.json()
+                                    if inspect_data.get('ExitCode', 1) != 0:
+                                        print(f"Warning: mv command failed")
+                                        return 'failed - mv command error'
+                                else:
+                                    print(f"Warning: Could not get exec result. Status: {inspect_response.status}")
+                        else:
+                            print(f"Warning: mv command exec failed. Status: {exec_response.status}")
+                            return 'failed - mv command error'
 
-        await container.stop()  # Call stop() as a method
+            print(f"\n=== Stopping container ===")
+            # Stop container
+            async with session.post(f"/containers/{switch.docker_container_id}/stop") as response:
+                if response.status not in [204, 304]:
+                    print(f"Warning: Could not stop container. Status: {response.status}")
+                    return 'failed - container stop error'
         
-        print(f"Successfully configured switch {switch.name}")
-        return 'success'
+            print(f"\n=== Successfully configured switch {switch.name} ===")
+            return 'success'
         
-    except aiodocker.exceptions.DockerError as e:
-        print(f"Docker error for switch {switch.name}: {e}")
-        return f'failed - {str(e)}'
     except Exception as e:
-        print(f"Unexpected error for switch {switch.name}: {e}")
+        print(f"Error configuring switch {switch.name}: {e}")
         return f'failed - {str(e)}'
 
 
