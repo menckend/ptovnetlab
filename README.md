@@ -1,22 +1,19 @@
-# Preamble
+### Preamble
 
-I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* modeling of a production EVPN Layer-3 Leaf & Spine physical network of Arista switches in a pre-existing GNS3 server, using Arista cEOS docker images.  (Also, to teach myself how to write/publish Python packages, but *really* for modeling Arista switches.)  I'd like to scale it up to supporting addditional virtual-lab platforms and network-device vendors' equipment, but all things have to start *somewhere*.
+ptovnetlab is geared towards fast/low-effort modeling of production network devices (both configuration and topology) in virtual-lab environments.  In its current iteration it can only retrieve run-state data from Arista switches (via Arista's EAPI) and can only instantiate the virtual-lab on GNS3 servers.
 
 - [Documentation](https://menckend.github.io/ptovnetlab/)
 - [Repository](https://github.com/menckend/ptovnetlab)
 - [Python Package](https://pypi.org/project/ptovnetlab/)
 
-## What it does
+### What it does
 
 - Grabs running configuration, version info, and lldp neighbor information from a list of Arista switches
 -   Retreived using Arista's "eAPI"
-- Sanitizes the switch configs for use in a cEOS environment
-  - Removes all AAA and username configuration
-  - Reformats interface names to match the cEOS interface naming convention  Ethernet_n , not Ethernt_n/1
-  - Comments out incompatible commands ("queue..."/etc. not supported on cEOS)
-  - Configures the system mac-address of the production switch
-    - Avoids mLAG incompatibility with older versions of cEOS
-      - Docker container default mac address has U/L bit set to L instead of U, which prevents MLAG from working
+- Sanitizes/converts the device configurations for use in a cEOS lab environment
+  - Removes logging/telemetry/instrumentation configuration
+  - Removes hardware-dependent commands that are not valid on cEOS devices
+  - Etc.
 - Builds a table of interconnections between the switches
   - Inferred from the "show lldp neighbor" and "show lldp local" output collected from the switches
 - Creates a GNS3 project
@@ -28,9 +25,9 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
        -  "startup-config" is passed directly to the Docker API, allowing ptovnetlab to run separately from the GNS3 server
   - Creates the connections between the GNS3/cEOS nodes, mirroring all inter-switch connections discovered in LLDP tables
 
-## What you'll need
+### What you'll need
 
-### Python
+#### Python
 
 - The ptovnetlab project was written using Python 3.12; it will run on versions as low as 3.9.
   - It relies on 'asyncio.to_thread()' (introduced in Python 3.9) 
@@ -38,17 +35,17 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
 - Once Python is installed, use pip to install ptovnetlab (which will install its dependencies as well):
   -  'pip install --user ptovnetlab'
 
-### GNS3 server
+#### GNS3 server
 
 - The ptovnetlab package was written against version 2.2.52 of GNS3 server.
   - Version 3.x of GNS3 server isn't compatible  (on my to-do list)
 - The GNS3 server must be pre-configured with cEOS docker templates
   - ptovnetlab will compare the EOS version string returned by the switches you're modeling to the names you've applied to the corresponding templates  on the GNS3 server
     - The GNS templates built on the docker images need to be named as "ceos:*n.n...*" for the matching to work
-- A container management service (typically dockerd or containerd) must be listening on TCP port 2375 of the GNS3 server
+- A container management service (typically dockerd) must be listening on TCP port 2375 of the GNS3 server
   - ptovnetlab makes API calls directly to the GNS3 server's container management service to copy configuration files directly onto the containers' filesystems.
 
-#### Setting up GNS3 server
+##### Setting up GNS3 server
 
 - Install GNS3 server as per GNS3 documentation (on a Linux OS)
   - Do not use any of the 3.x releases, only 2.x releases
@@ -63,10 +60,9 @@ I wrote this package (ptovnetlab) specifically to assist in *fast/low-effort* mo
   - Select "existing image" when prompted
   - Enter the following string when prompted for the startup command
   -   '/sbin/init systemd.setenv=INTFTYPE=eth systemd.setenv=ETBA=1 systemd.setenv=SKIP_ZEROTOUCH_BARRIER_IN_SYSDBINIT=1 systemd.setenv=CEOS=1 systemd.setenv=EOS_PLATFORM=ceoslab systemd.setenv=container=docker systemd.setenv=MGMT_INTF=eth0
-'
-- 
+ 
 
-### Arista Switches
+#### Arista Switches
 
 All switches that you will be modeling will need to have:
 
@@ -82,7 +78,7 @@ management api http-commands
 
 ### Instructions
 
-### Prep
+#### Prep
 
 - Have Python and the ptovnetlab package installed on the host that will run ptovnetlab
 - Have your login credentials for your production switches handy
@@ -91,7 +87,7 @@ management api http-commands
   -   - Populate 'input-switch-list' with the names of the switches that you want to model in gns3
       -   One switch name per line (no quotes or commas)
 
-### Parameter/argument list
+#### Parameter/argument list
 
 ptovnetlab uses the following arguments (passed as keyword pairs):
 
