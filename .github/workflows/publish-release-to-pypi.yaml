@@ -48,12 +48,12 @@ jobs:
         name: python-package-distributions
         path: dist/
     - name: Publish distribution to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+      uses: pypa/gh-action-pypi-publish@release/v1.12
   github-release:
     if: contains(github.ref, '/tags/') && contains(github.event.base_ref, 'main')
     environment:
       name: pypi
-      url: https://pypi.org/p/ptovnetlab  # Replace <package-name> with your PyPI project name
+      url: https://pypi.org/p/netbox_rpkfi  # Replace <package-name> with your PyPI project name
     name: >-
       Sign the Python distribution with Sigstore
       and upload them to GitHub Release
@@ -69,12 +69,12 @@ jobs:
       with:
         name: python-package-distributions
         path: dist/
-    - name: Sign the dists with Sigstore
-      uses: sigstore/gh-action-sigstore-python
-      with:
-        inputs: >-
-          ./dist/*.tar.gz
-          ./dist/*.whl
+#    - name: Sign the dists with Sigstore
+#      uses: sigstore/gh-action-sigstore-python@v2.1.1
+#      with:
+#        inputs: >-
+#          ./dist/*.tar.gz
+#          ./dist/*.whl
     - name: Upload artifact signatures to GitHub Release
       env:
         GITHUB_TOKEN: ${{ github.token }}
