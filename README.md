@@ -6,6 +6,10 @@ ptovnetlab is geared towards fast/low-effort modeling of production network devi
 - [Repository](https://github.com/menckend/ptovnetlab)
 - [Python Package](https://pypi.org/project/ptovnetlab/)
 
+### Contributions
+
+Contributions are VERY WELCOME.  They are encouraged, giddily anticipated, and will be treated as undeserved treasures.  There's no protocol or norms established.  As of 02/12/25, @menckend is the author and only contributor, but accomplices are eagerly anticipated -- just open an issue or post on the "discussions" section of the github repo.
+
 ### What it does
 
 - Grabs running configuration, version info, and lldp neighbor information from a list of Arista switches
