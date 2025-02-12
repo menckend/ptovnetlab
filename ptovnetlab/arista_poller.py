@@ -156,7 +156,9 @@ def get_sw_data(
     sw_cntr3_in: int
 ) -> Tuple[Switch, List[Connection]]:
     """
-    Retrieve switch data and LLDP connections for a single switch.
+    Retrieve switch data and LLDP connections for a single switch.  Uses async_io.to_thread to 
+    achieve non-blocking concurrent polling of multiple switches.  to_thread is required due to 
+    our use of the pyeapi library, which relies on the synchronous requests library.
 
     Args:
         switch3 (str): Switch hostname or IP to interrogate

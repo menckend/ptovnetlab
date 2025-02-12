@@ -125,7 +125,7 @@ ptovnetlab uses the following arguments (passed as keyword pairs):
 
 #### As a Python script
 
-Installing ptovnetlab via pip will save you the effor of installing the additional dependencies list in pyproject.toml, but you can also just grab the contents of the ptovnetlab folder [directly from the git repository](https://github.com/menckend/ptovnetlab/tree/main/ptovnetlab) and store them on the host you'll run them from.
+Installing ptovnetlab via pip will save you the effort of installing the additional dependencies list in pyproject.toml, but you can also just grab the contents of the ptovnetlab folder [directly from the git repository](https://github.com/menckend/ptovnetlab/tree/main/ptovnetlab) and store them on the host you'll run them from.
 
 You'll also need to move the "ptovnetlab-cli.py" file *up* one level in the directory structure from the ptovnetlab folder after copying the entire folder to your host.  This is to work around "goofiness" with regards to how Python treats namespaces when accessing Python code as a "script" vs accessing it "as a module."
 
