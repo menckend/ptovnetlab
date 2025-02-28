@@ -13,3 +13,9 @@ span.summarylabel {
 table.summarytable {
     width: 100%;
 }
+.wy-nav-content {
+    padding: 1.618em 3.236em;
+    height: 100%;
+    max-width: 80vw;     
+    margin: auto
+}
